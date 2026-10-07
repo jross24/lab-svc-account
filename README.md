@@ -150,3 +150,7 @@ The deployment-order rule applies here too. Deploy the `Dev` stage of lab-svc-co
 | `lib/sign.ts` | Signs a request with AWS Signature Version 4. |
 | `test/` | The unit tests (vitest). |
 | `.github/workflows/` | Three small files that call the workflows in lab-workflows. |
+
+## Release gate
+
+Each release runs the end-to-end suite of [lab-e2e](https://github.com/jross24/lab-e2e) in Test before it goes to Staging.
