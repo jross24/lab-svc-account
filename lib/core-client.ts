@@ -1,4 +1,6 @@
 import { signGet } from './sign.ts';
+import { currentTracing } from './tracing.ts';
+import type { Tracing } from './tracing.ts';
 
 const ITEMS_PATH = '/items';
 const TIMEOUT_MS = 5000;
@@ -19,6 +21,8 @@ export interface CoreClientOptions {
     init: { method: string; headers: Record<string, string>; signal: AbortSignal },
   ) => Promise<Response>;
   readonly env?: Record<string, string | undefined>;
+  // The default is the tracing of the function: OpenTelemetry in Lambda, and no tracing elsewhere.
+  readonly tracing?: Tracing;
 }
 
 function required(env: Record<string, string | undefined>, name: string): string {
@@ -36,9 +40,11 @@ function summaryOf(body: unknown): CoreSummary | undefined {
 
 // Calls GET /items of the core service. The API of core accepts only a request that an IAM identity signed.
 // The stack sets CORE_URL. The Lambda runtime sets the region and the credentials of the function role.
+// The request goes out as a client span, with the header traceparent, so the trace goes on in core.
 export async function fetchCoreSummary(options: CoreClientOptions = {}): Promise<CoreSummary> {
   const env = options.env ?? process.env;
   const send = options.fetch ?? fetch;
+  const tracing = options.tracing ?? currentTracing();
 
   const url = `${required(env, 'CORE_URL')}${ITEMS_PATH}`;
   const headers = await signGet({
@@ -53,7 +59,9 @@ export async function fetchCoreSummary(options: CoreClientOptions = {}): Promise
 
   let response: Response;
   try {
-    response = await send(url, { method: 'GET', headers, signal: AbortSignal.timeout(TIMEOUT_MS) });
+    // The request is signed above. The tracing adds traceparent AFTER the signature. The signature lists
+    // only the host and the x-amz headers, so the new header does not break it.
+    response = await tracing.fetch(send, url, { method: 'GET', headers, signal: AbortSignal.timeout(TIMEOUT_MS) });
   } catch (cause) {
     throw new CoreError('the request to core failed', { cause });
   }
