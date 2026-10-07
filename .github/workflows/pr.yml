@@ -1,0 +1,11 @@
+name: pr
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pr:
+    uses: jross24/lab-workflows/.github/workflows/pr.yml@main

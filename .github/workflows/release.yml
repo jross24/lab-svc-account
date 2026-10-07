@@ -1,0 +1,20 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+# A second release waits for the first one. GitHub does not cancel a deployment that is in progress.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write # the version tag and the GitHub release
+  id-token: write # the OIDC login to AWS
+
+jobs:
+  release:
+    uses: jross24/lab-workflows/.github/workflows/release.yml@main
+    # The deploy jobs read the secret AWS_ACCOUNT_ID of their GitHub environment.
+    secrets: inherit
