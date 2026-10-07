@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { CloudAssembly, CloudFormationStackArtifact } from 'aws-cdk-lib/cx-api';
 import { createApp } from '../lib/app.ts';
-import { STAGES } from '../lib/stages.ts';
+import { DEV_STAGE, STAGES } from '../lib/stages.ts';
+
+// The stages that inject a fault on purpose. Only the release drill changes it.
+const DRILL_STAGES: readonly string[] = [];
 
 // Twelve digits that are not a part of a longer number or of a hex hash.
 const ACCOUNT_ID = /(?<![0-9a-f])[0-9]{12}(?![0-9a-f])/i;
@@ -112,9 +115,61 @@ describe('the app with dev=true in the context', () => {
 });
 
 describe('the stage config', () => {
-  it('has gradualRelease only for Production', () => {
-    expect(STAGES.Test.gradualRelease).toBe(false);
-    expect(STAGES.Staging.gradualRelease).toBe(false);
-    expect(STAGES.Production.gradualRelease).toBe(true);
+  it('releases Test and Staging all at once, and Production as a canary of 10 percent for 5 minutes', () => {
+    expect(STAGES.Test.release).toEqual({ kind: 'allAtOnce' });
+    expect(STAGES.Staging.release).toEqual({ kind: 'allAtOnce' });
+    expect(STAGES.Production.release).toEqual({ kind: 'canary', percent: 10, minutes: 5 });
+    expect(DEV_STAGE.release).toEqual({ kind: 'allAtOnce' });
+  });
+
+  it('keeps the logs for 7 days in Test and Staging, and for 30 days in Production', () => {
+    expect(STAGES.Test.logRetentionDays).toBe(7);
+    expect(STAGES.Staging.logRetentionDays).toBe(7);
+    expect(STAGES.Production.logRetentionDays).toBe(30);
+  });
+
+  it('injects a fault only in the stages that the list DRILL_STAGES names', () => {
+    // The fault switch is a device for the release drill. A fault in the main branch is a mistake.
+    // So a stage must be in the list and must set injectFault. One of the two alone fails this test.
+    // The drill changes both in one pull request. See "The Production drill" in the README.
+    for (const [name, config] of Object.entries(STAGES)) {
+      expect(config.injectFault, name).toBe(DRILL_STAGES.includes(name));
+    }
+    expect(DEV_STAGE.injectFault).toBe(false);
+  });
+});
+
+describe('the deployment configuration of each stage', () => {
+  const assembly = createApp().synth();
+
+  function groupOf(stage: string): { readonly Properties: { readonly DeploymentConfigName: string } } {
+    const stack = assembly.stacksRecursively.find((candidate) => candidate.hierarchicalId === `${stage}/Account`);
+    const groups = Object.values(stack ? templateOf(stack).Resources : {}).filter(
+      (resource) => resource.Type === 'AWS::CodeDeploy::DeploymentGroup',
+    );
+    expect(groups).toHaveLength(1);
+    return groups[0] as unknown as { readonly Properties: { readonly DeploymentConfigName: string } };
+  }
+
+  it('is all at once in Test and Staging, and a canary of 10 percent for 5 minutes in Production', () => {
+    expect(groupOf('Test').Properties.DeploymentConfigName).toBe('CodeDeployDefault.LambdaAllAtOnce');
+    expect(groupOf('Staging').Properties.DeploymentConfigName).toBe('CodeDeployDefault.LambdaAllAtOnce');
+    expect(groupOf('Production').Properties.DeploymentConfigName).toBe('CodeDeployDefault.LambdaCanary10Percent5Minutes');
+  });
+
+  it('is the only difference between the templates of the stages, apart from the stage config', () => {
+    // Test must exercise the resources that Production runs. So the stages must differ only in the stage config:
+    // the log retention, the deployment configuration, and the fault switch of the drill with the id of the
+    // Lambda version that the switch changes.
+    const normalised = (stage: string): string => {
+      const stack = assembly.stacksRecursively.find((candidate) => candidate.hierarchicalId === `${stage}/Account`);
+      return JSON.stringify(stack?.template)
+        .replace(/"RetentionInDays":[0-9]+/g, '"RetentionInDays":0')
+        .replace(/CodeDeployDefault\.Lambda[A-Za-z0-9]+/g, 'CodeDeployDefault.Lambda')
+        .replace(/"INJECT_FAULT":"true",/g, '')
+        .replace(/CurrentVersion[0-9A-F]{8}[0-9a-f]{32}/g, 'CurrentVersion');
+    };
+    expect(normalised('Staging')).toBe(normalised('Test'));
+    expect(normalised('Production')).toBe(normalised('Test'));
   });
 });

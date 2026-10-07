@@ -5,6 +5,7 @@ It is an AWS CDK app in TypeScript. The pipeline in [lab-workflows](https://gith
 
 The service has the same shape as [lab-svc-core](https://github.com/jross24/lab-svc-core).
 This README explains what is different. The lab-svc-core README explains the stages and the release steps in more detail.
+It also explains the shared mechanics of the gradual release and of the observability. This README links to it and does not copy it.
 
 ## What the service is
 
@@ -38,7 +39,7 @@ If the call to core fails, the route returns HTTP 502 with a JSON error. It does
 ```
 
 The response does not copy the error body of core, because that body can name an IAM role and an account.
-The log of the function has the full error.
+The log of the function has the full error. The section "What an error means here" explains why this 502 matters for a release.
 
 ## How the service finds and calls core
 
@@ -81,12 +82,112 @@ Each stage holds one stack, `lab-svc-account`. The file `lib/stages.ts` holds th
 | Setting | Test | Staging | Production |
 | --- | --- | --- | --- |
 | `logRetentionDays` | 7 | 7 | 30 |
-| `gradualRelease` | false | false | true |
+| `release` | all at once | all at once | canary: 10 percent, then 100 percent after 5 minutes |
+| `injectFault` | false | false | false |
 
-`gradualRelease` is a placeholder. No code uses it yet.
+Every stage has the same resources: the same alias, deployment group, alarms and dashboard. Only the values in the table differ.
+A unit test compares the three templates. `injectFault` is a device for the release drill. No stage sets it in `main`.
 
 The code names no AWS account and no region. A stack goes to the account of the credentials that deploy it.
 All three stages use the same bundled Lambda code.
+
+## Gradual release and observability
+
+This service uses the pattern of [lab-svc-core](https://github.com/jross24/lab-svc-core). The core README has the shared mechanics:
+"Gradual release" (the steps of a release, the rollback rules, how to watch a release) and "Observability" (log line, metrics, tracing, dashboard).
+
+### What is the same as core
+
+- The alias `live`. The API calls the alias, and CodeDeploy moves the traffic of the alias with the `release` setting of the stage.
+- The alarms `ErrorsAlarm` and `LatencyAlarm` on the alias. The deployment group watches them and rolls back.
+- One JSON log line and one embedded-metric line for each request, with the dimensions `service` and `version`.
+- Active X-Ray tracing and the fault switch `injectFault`.
+- The five shared files in `lib/`. They are byte-identical copies of the files in core: `gradual-release.ts`, `service-dashboard.ts`, `instrument.ts`, `logger.ts` and `metrics.ts`.
+- The first release that contains this change creates the alias and goes to each stage without a canary.
+
+### What is different from core
+
+- **A third alarm.** `ServiceErrorsAlarm` watches the metric `errors` of `service=account` and of the version that the stack deploys. See "What an error means here".
+- **The function calls core.** Its duration includes the signed call. The timeout is 10 seconds, and the latency threshold is 3000 ms. See "Where the latency threshold comes from".
+- **The API is public.** The route has no authoriser. The alias runs with the role of the function, so the policy `execute-api:Invoke` on the core API did not change.
+- **The dashboard** is named `lab-svc-account` and has one more graph: "Errors that the service counted, by version".
+- **Nothing changed for a consumer.** The parameter `/lab/account/url`, the variable `CORE_URL` and the policy on the core ARN are the same.
+
+The API integration calls the alias, and not the function. The invoke permission of the API moves to the alias in the same update.
+The stack makes every integration of the API depend on every invoke permission of the API. The permission then exists before an integration calls the alias.
+This route has one integration and one permission. The loop in `lib/account-stack.ts` also covers a stack with more routes.
+Two unit tests prove it: "is the target of the invoke permission before the integration calls it" and "makes every integration of the API depend on every invoke permission of the API".
+
+### What an error means here
+
+Lambda counts a call as an error only when the function throws or times out. This service does not throw when the call to core fails.
+It catches the failure and returns HTTP 502. So Lambda sees a good call, and `ErrorsAlarm` cannot see a new version that is unable to call core.
+For example, a wrong `CORE_URL` or a missing permission gives a 502 on each call and no Lambda error.
+
+The wrapper `instrument` counts each response with a status of 500 or more as an error in the metric line (`errors` is 1). It also logs the call at level `ERROR`.
+`ServiceErrorsAlarm` fires on one such error or more in a period of 1 minute. It watches the version that the stack deploys.
+During a canary it sees the errors of the new version, and not the errors of the old version. The deployment group watches it with the other two alarms.
+
+The test "the exported handler when the core call fails" in `test/profile-handler.test.ts` proves this with the real handler and a fake core that fails.
+It uses four failures: HTTP 503, HTTP 403, a failed request and an unreadable body. In each case the handler returns 502 and does not throw.
+The metric line has `errors` set to 1, and the log level is `ERROR`. A second test compares the alarm with the metric line that the handler writes: same namespace, name, service and version.
+
+A response with a status of 4xx is not an error. A failure of core also fires the alarm, and it rolls back a deployment of a good version.
+When a deployment rolls back, check the dashboard `lab-svc-core` first.
+
+### Where the latency threshold comes from
+
+The latency alarm fires when the p99 duration of the alias is over `LATENCY_P99_THRESHOLD_MS` in 2 periods of 1 minute in a row.
+The duration of this function includes the signed call to core. That call is about one more HTTPS round trip. A cold core adds its start time.
+I measured the function in Test and in Production on 2026-10-07, with read-only calls. The windows end at about 22:10 UTC.
+A warm call has no `Init Duration` in its `REPORT` line. A cold call has one.
+
+| Stage | Source and window | What | Result |
+| --- | --- | --- | --- |
+| Test | CloudWatch `Duration`, last 24 hours, 121 calls | p50, p99, max | 152 ms, 1993 ms, 2014 ms |
+| Test | Logs Insights, 7 days, 106 warm calls | p50, p90, p99, max | 118 ms, 554 ms, 914 ms, 1035 ms |
+| Test | Logs Insights, 7 days, 15 cold calls | init time, duration (average, max) | 183 ms (max 195 ms), 1830 ms (max 2014 ms) |
+| Test | 26 public GET requests, 22:02 to 22:05 UTC, 3 s and 8 s apart | duration of the function | first call after a pause 554 ms. The other 25: p50 57 ms, max 147 ms |
+| Production | CloudWatch `Duration`, last 24 hours, 20 calls | p50, p99, max | 180 ms, 2057 ms, 2059 ms |
+| Production | Logs Insights, 7 days, 17 warm calls | p50, p90, p99, max | 164 ms, 471 ms, 1260 ms, 1260 ms |
+| Production | Logs Insights, 7 days, 3 cold calls | init time, duration (average, max) | 172 ms (max 208 ms), 1888 ms (max 2059 ms) |
+
+What the numbers show:
+
+- A warm call in a steady stream takes under 150 ms.
+- The slow warm calls that I checked (554 ms, 914 ms and 1260 ms) were each the first call after a pause of a few minutes.
+- For the 914 ms call, the log of core shows two calls in the same second. Both took under 51 ms. So core did not cause the delay. I did not find the cause.
+- A cold call takes 1.6 to 2.1 seconds. Most of this time is inside the handler. The init time is 150 to 210 ms and is not part of the duration.
+- Production had only 20 calls in 24 hours, so its numbers are an estimate. Test has more calls and sets the value.
+
+The threshold is **3000 ms**. It is about 3 times the warm p99 of Test (914 ms). It is above the slowest cold call that I saw (2059 ms), so a cold start alone does not fire the alarm.
+It is below a third of the timeout (10 s divided by 3 is 3333 ms). A call to core that hangs stops at the client timeout of 5 seconds. That is over the threshold.
+A unit test keeps the value between 2 times the measured warm p99 and a third of the timeout.
+
+The log line now has the field `coldStart`. After the first release, measure again with Logs Insights. Compare the warm and the cold calls:
+
+```
+filter ispresent(status) and not ispresent(coldStart)
+| stats count(), pct(durationMs, 50), pct(durationMs, 99), max(durationMs)
+```
+
+### The drill for this service
+
+The full steps are in "The Production drill" of the [core README](https://github.com/jross24/lab-svc-core#the-production-drill). For this service:
+
+1. Make one pull request with two edits. In `lib/stages.ts`, set `injectFault: true` in the `Production` block. In `test/app.test.ts`, set `DRILL_STAGES` to `['Production']`.
+2. Give it the title `fix: drill, inject a fault in production`. Merge it, and wait at `deploy-production`.
+3. Approve the `production` environment. Then start this traffic loop in a second terminal:
+
+   ```
+   ACC=$(aws ssm get-parameter --name /lab/account/url --profile lab-prod --query Parameter.Value --output text)
+   for i in $(seq 1 180); do curl --silent --output /dev/null --write-out "%{http_code} " "$ACC/profile"; sleep 2; done
+   ```
+
+4. About one call in ten fails, because the canary gets 10 percent of the calls. The loop prints a 5xx status for them.
+5. Expect `ErrorsAlarm` and `ServiceErrorsAlarm` to fire, CodeDeploy to roll back, and the job to fail. Then revert with `fix: remove the drill fault`.
+
+The fault makes the function throw, so Lambda counts the error too. The 502 case, where the function does not throw, has a unit test and no drill.
 
 ## How a change reaches Production
 
@@ -94,16 +195,20 @@ All three stages use the same bundled Lambda code.
 2. Merge the pull request with a squash. The `release` workflow starts.
 3. The workflow works out the next version from the commit title and creates the tag, for example `v0.2.0`.
 4. The workflow builds one time and stores the zipped `cdk.out` in a GitHub release.
-5. The workflow deploys that same zip to Test, then to Staging.
+5. The workflow deploys that same zip to Test, then to Staging. In both, CodeDeploy moves the traffic at once.
 6. The workflow waits. A reviewer approves the `production` environment in GitHub. Then the workflow deploys the same zip to Production.
+   CodeDeploy moves 10 percent of the traffic, waits 5 minutes, and moves the rest.
 
 A title that starts with `feat:` gives a minor version. A title with `!` before the colon gives a major version. Any other title gives a patch version.
 
 To go back to an old version, run the `redeploy` workflow. It deploys the stored zip of that release and does not build.
 
 ```
-gh workflow run redeploy.yml -f version=0.1.0 -f environment=test
+gh workflow run redeploy.yml -f version=<last-good-version> -f environment=test
 ```
+
+A redeploy to Production is also a canary. Do not redeploy a release from before the gradual release (`0.1.0` and `0.1.1`).
+Those releases have no alias. A redeploy of one removes the alias, the deployment group, the alarms and the dashboard.
 
 The three files in `.github/workflows/` are copies of the files in lab-svc-core. This repository has no other pipeline code.
 
@@ -142,10 +247,13 @@ The deployment-order rule applies here too. Deploy the `Dev` stage of lab-svc-co
 | --- | --- |
 | `bin/app.ts` | The entry point that `cdk.json` names. |
 | `lib/app.ts` | Reads the context values and makes the stages. |
-| `lib/stages.ts` | The typed settings of each stage. |
+| `lib/stages.ts` | The typed settings of each stage: log retention, the release type and the fault switch. |
 | `lib/account-stage.ts` | The CDK stage. |
-| `lib/account-stack.ts` | The stack: SSM lookups, function, IAM policy, API, SSM parameter, outputs. |
-| `lib/profile-handler.ts` | The Lambda handler. |
+| `lib/account-stack.ts` | The stack: SSM lookups, function, IAM policy, alias and release, API, dashboard, SSM parameter, outputs. |
+| `lib/gradual-release.ts` | Copy from core. The alias, the deployment group, the three alarms and the `Release` type. |
+| `lib/service-dashboard.ts` | Copy from core. The dashboard of a stage. |
+| `lib/instrument.ts`, `lib/logger.ts`, `lib/metrics.ts` | Copy from core. The wrapper of the handler, the log line and the metric line. |
+| `lib/profile-handler.ts` | The Lambda handler, wrapped by `instrument`, and the fault switch. |
 | `lib/core-client.ts` | Calls `GET /items` of core and checks the answer. |
 | `lib/sign.ts` | Signs a request with AWS Signature Version 4. |
 | `test/` | The unit tests (vitest). |
