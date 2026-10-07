@@ -146,7 +146,12 @@ I measured the function in Test and in Production on 2026-10-07, with read-only 
 A warm call has no `Init Duration` in its `REPORT` line. A cold call has one.
 
 I took these measurements before the change to OpenTelemetry, with 128 MB of memory and Lambda active tracing.
-Now the function has 512 MB, and each call sends its spans before it returns. So the duration changes: measure again after the release.
+Now the function has 512 MB, and each call sends its spans before it returns. So the duration changes.
+**After the tracing change (512 MB, OpenTelemetry).** The lab deployed the four services to its own account `lab-dev` on 2026-10-07 and loaded the web page.
+The first request of account after a deployment (the whole chain cold) took 1.2 to 1.3 s. A warm request took 139 ms (median). Core took 0.45 to 0.47 s for its first request.
+The value 3000 ms stays. It is above the first request, so a cold start does not fire the alarm. A core that hangs makes this function wait 5 s (the limit of its call to core), so a real fault fires it.
+The core README has the full table for 128, 256, 512 and 1024 MB.
+
 
 | Stage | Source and window | What | Result |
 | --- | --- | --- | --- |
@@ -220,7 +225,7 @@ The function signs the request to core first (`lib/sign.ts`). Then `lib/core-cli
 
 The signature lists only the `host` header and the `x-amz-` headers (`SignedHeaders`). So the new header does not break the signature.
 
-The trace does not use the header `X-Amzn-Trace-Id`, because API Gateway replaces it with a new value.
+The trace does not use the header `X-Amzn-Trace-Id`. API Gateway adds a part of its own to that header, and Lambda ignores it for its own trace. The core README shows the test.
 
 The tests in `test/core-client.test.ts` prove this. Each test runs inside a server span with an in-memory exporter:
 

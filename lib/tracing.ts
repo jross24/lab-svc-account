@@ -35,7 +35,8 @@ const DEFAULT_FLUSH_TIMEOUT_MS = 2500;
 //
 // A trace crosses from one service to the next in the W3C header "traceparent". The class puts the header on a
 // request to another service (fetch) and reads it from a request that it serves (serve).
-// It does not use the header X-Amzn-Trace-Id: API Gateway replaces that header with a new value of its own.
+// It does not use the header X-Amzn-Trace-Id. API Gateway adds a part of its own to it ("Self="), and Lambda
+// starts its own trace for the function and ignores the header. A traceparent header passes API Gateway as it is.
 //
 // Each request ends with a flush, because Lambda freezes the function when the handler returns, and a frozen
 // function cannot send its spans.
