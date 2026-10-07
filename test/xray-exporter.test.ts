@@ -81,7 +81,7 @@ describe('XRayExporter', () => {
   it('reports a failed answer, logs the status and the error type, and does not log the body', async () => {
     const { logs, send } = setup(() =>
       Promise.resolve(
-        new Response('User: arn:aws:sts::123456789012:assumed-role/x is not authorized', {
+        new Response('User: arn:aws:sts::SECRET-ACCOUNT-ID:assumed-role/x is not authorized', {
           status: 403,
           headers: { 'x-amzn-errortype': 'AccessDeniedException' },
         }),
@@ -95,7 +95,7 @@ describe('XRayExporter', () => {
       status: 403,
       errorType: 'AccessDeniedException',
     });
-    expect(logs[0]).not.toContain('123456789012');
+    expect(logs[0]).not.toContain('SECRET-ACCOUNT-ID');
   });
 
   it('reports a network error as a failure and does not throw', async () => {

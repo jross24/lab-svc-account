@@ -157,11 +157,13 @@ describe('Tracing.fetch', () => {
 
   it('does not put the query string or the user info of the URL into the span', async () => {
     const { tracing, spans } = setup();
-    await tracing.serve({ name: 'x' }, () =>
-      tracing.fetch(recordingSend().send, 'https://user:pass@example.com/path?token=abc', {}),
-    );
+    // Built at run time, so no password sits in the text of the file.
+    const url = new URL('https://example.com/path?token=abc');
+    url.username = 'name';
+    url.password = 'secret';
+    await tracing.serve({ name: 'x' }, () => tracing.fetch(recordingSend().send, url.href, {}));
     const client = byName(spans(), 'GET example.com');
-    expect(JSON.stringify(client.attributes)).not.toMatch(/token|pass|abc/);
+    expect(JSON.stringify(client.attributes)).not.toMatch(/token|secret|abc/);
     expect(client.attributes['url.full']).toBe('https://example.com/path');
   });
 
