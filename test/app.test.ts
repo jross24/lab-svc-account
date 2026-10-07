@@ -1,0 +1,120 @@
+import { describe, expect, it } from 'vitest';
+import type { CloudAssembly, CloudFormationStackArtifact } from 'aws-cdk-lib/cx-api';
+import { createApp } from '../lib/app.ts';
+import { STAGES } from '../lib/stages.ts';
+
+// Twelve digits that are not a part of a longer number or of a hex hash.
+const ACCOUNT_ID = /(?<![0-9a-f])[0-9]{12}(?![0-9a-f])/i;
+
+interface TemplateShape {
+  readonly Resources: Record<string, { readonly Type: string; readonly Properties?: { readonly Code?: unknown } }>;
+  readonly Outputs: { readonly Version: { readonly Value: unknown } };
+}
+
+function templateOf(stack: CloudFormationStackArtifact): TemplateShape {
+  return stack.template as TemplateShape;
+}
+
+function stageNames(assembly: CloudAssembly): string[] {
+  // The cloud assembly lists the stages in alphabetical order.
+  return assembly.nestedAssemblies.map((nested) => nested.displayName).sort();
+}
+
+function stackIds(assembly: CloudAssembly): string[] {
+  return assembly.stacksRecursively.map((stack) => stack.hierarchicalId).sort();
+}
+
+function lambdaCode(assembly: CloudAssembly): unknown[] {
+  return assembly.stacksRecursively.flatMap((stack) =>
+    Object.values(templateOf(stack).Resources)
+      .filter((resource) => resource.Type === 'AWS::Lambda::Function')
+      .map((resource) => resource.Properties?.Code),
+  );
+}
+
+function versions(assembly: CloudAssembly): unknown[] {
+  return assembly.stacksRecursively.map((stack) => templateOf(stack).Outputs.Version.Value);
+}
+
+describe('the app with no context', () => {
+  const assembly = createApp().synth();
+
+  it('has the three stages Test, Staging and Production, and no other stage', () => {
+    expect(stageNames(assembly)).toEqual(['Production', 'Staging', 'Test']);
+  });
+
+  it('has one stack in each stage', () => {
+    expect(stackIds(assembly)).toEqual(['Production/Account', 'Staging/Account', 'Test/Account']);
+  });
+
+  it('has no account and no region in any stack', () => {
+    for (const stack of assembly.stacksRecursively) {
+      expect(stack.environment.name).toBe('aws://unknown-account/unknown-region');
+    }
+  });
+
+  it('needs no lookup in an AWS account at synth', () => {
+    // The stack reads the SSM parameters of core at deployment. A synth-time lookup shows as missing context.
+    expect(assembly.manifest.missing ?? []).toEqual([]);
+  });
+
+  it('has no account ID in any template', () => {
+    for (const stack of assembly.stacksRecursively) {
+      expect(JSON.stringify(stack.template)).not.toMatch(ACCOUNT_ID);
+    }
+  });
+
+  it('uses the same Lambda code asset in all three stages', () => {
+    const code = lambdaCode(assembly);
+    expect(code).toHaveLength(3);
+    expect(code[0]).toBeDefined();
+    expect(code[1]).toEqual(code[0]);
+    expect(code[2]).toEqual(code[0]);
+  });
+
+  it('uses the version 0.0.0-dev', () => {
+    expect(versions(assembly)).toEqual(['0.0.0-dev', '0.0.0-dev', '0.0.0-dev']);
+  });
+});
+
+describe('the app with a version in the context', () => {
+  it('uses that version in each stage', () => {
+    expect(versions(createApp({ version: '1.4.0' }).synth())).toEqual(['1.4.0', '1.4.0', '1.4.0']);
+  });
+
+  it.each(['', 'v1.4.0', '1.4', 'latest', '1.4.0 ', 140])('rejects the version %j', (version) => {
+    expect(() => createApp({ version })).toThrow(/version must look like 1\.2\.3/);
+  });
+});
+
+describe('the app with dev=true in the context', () => {
+  const assembly = createApp({ dev: 'true' }).synth();
+
+  it('has only the stage Dev', () => {
+    expect(stageNames(assembly)).toEqual(['Dev']);
+    expect(stackIds(assembly)).toEqual(['Dev/Account']);
+  });
+
+  it('has no account, no region and no account ID', () => {
+    for (const stack of assembly.stacksRecursively) {
+      expect(stack.environment.name).toBe('aws://unknown-account/unknown-region');
+      expect(JSON.stringify(stack.template)).not.toMatch(ACCOUNT_ID);
+    }
+  });
+
+  it('accepts dev=false and makes the three stages', () => {
+    expect(stageNames(createApp({ dev: 'false' }).synth())).toEqual(['Production', 'Staging', 'Test']);
+  });
+
+  it('rejects a value of dev that is not true or false', () => {
+    expect(() => createApp({ dev: 'yes' })).toThrow(/dev must be true or false/);
+  });
+});
+
+describe('the stage config', () => {
+  it('has gradualRelease only for Production', () => {
+    expect(STAGES.Test.gradualRelease).toBe(false);
+    expect(STAGES.Staging.gradualRelease).toBe(false);
+    expect(STAGES.Production.gradualRelease).toBe(true);
+  });
+});

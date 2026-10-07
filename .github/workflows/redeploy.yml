@@ -1,0 +1,29 @@
+name: redeploy
+run-name: redeploy ${{ inputs.version }} to ${{ inputs.environment }}
+
+# The rollback path. It deploys the stored cloud assembly of an old release again.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version to deploy, for example 1.2.3
+        required: true
+        type: string
+      environment:
+        description: The environment to deploy to
+        required: true
+        type: choice
+        options: [test, staging, production]
+
+permissions:
+  contents: read
+  id-token: write # the OIDC login to AWS
+
+jobs:
+  redeploy:
+    uses: jross24/lab-workflows/.github/workflows/redeploy.yml@main
+    with:
+      version: ${{ inputs.version }}
+      environment: ${{ inputs.environment }}
+    # The deploy job reads the secret AWS_ACCOUNT_ID of its GitHub environment.
+    secrets: inherit
