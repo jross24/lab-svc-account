@@ -56,6 +56,7 @@ So the templates name no account, and one `cdk synth` still serves each account.
 The API of core uses IAM authorisation. So the function signs each request with AWS Signature Version 4.
 It signs with the temporary credentials of its own role. The Lambda runtime puts them in environment variables.
 The file `lib/sign.ts` does the signing with `@smithy/signature-v4` and `@aws-crypto/sha256-js`. esbuild bundles both into the function.
+The call to core is also a client span of the trace. The section "Tracing" explains how the trace header and the signature work together.
 
 The stack also writes its own address for the web application of a later phase.
 
@@ -101,14 +102,16 @@ This service uses the pattern of [lab-svc-core](https://github.com/jross24/lab-s
 - The alias `live`. The API calls the alias, and CodeDeploy moves the traffic of the alias with the `release` setting of the stage.
 - The alarms `ErrorsAlarm` and `LatencyAlarm` on the alias. The deployment group watches them and rolls back.
 - One JSON log line and one embedded-metric line for each request, with the dimensions `service` and `version`.
-- Active X-Ray tracing and the fault switch `injectFault`.
-- The five shared files in `lib/`. They are byte-identical copies of the files in core: `gradual-release.ts`, `service-dashboard.ts`, `instrument.ts`, `logger.ts` and `metrics.ts`.
+- OpenTelemetry tracing, with no Lambda active tracing, and the fault switch `injectFault`. See "Tracing".
+- Nine files in `lib/`. They are byte-identical copies of the files in core: `gradual-release.ts`, `service-dashboard.ts`, `instrument.ts`, `logger.ts`, `metrics.ts`, `tracing.ts`, `xray-exporter.ts`, `sigv4.ts` and `function-defaults.ts`.
+- The tests `test/tracing.test.ts`, `test/xray-exporter.test.ts` and `test/sigv4.test.ts`. They are byte-identical copies too.
 - The first release that contains this change creates the alias and goes to each stage without a canary.
 
 ### What is different from core
 
 - **A third alarm.** `ServiceErrorsAlarm` watches the metric `errors` of `service=account` and of the version that the stack deploys. See "What an error means here".
 - **The function calls core.** Its duration includes the signed call. The timeout is 10 seconds, and the latency threshold is 3000 ms. See "Where the latency threshold comes from".
+  The trace has a client span for this call. See "Tracing".
 - **The API is public.** The route has no authoriser. The alias runs with the role of the function, so the policy `execute-api:Invoke` on the core API did not change.
 - **The dashboard** is named `lab-svc-account` and has one more graph: "Errors that the service counted, by version".
 - **Nothing changed for a consumer.** The parameter `/lab/account/url`, the variable `CORE_URL` and the policy on the core ARN are the same.
@@ -141,6 +144,14 @@ The latency alarm fires when the p99 duration of the alias is over `LATENCY_P99_
 The duration of this function includes the signed call to core. That call is about one more HTTPS round trip. A cold core adds its start time.
 I measured the function in Test and in Production on 2026-10-07, with read-only calls. The windows end at about 22:10 UTC.
 A warm call has no `Init Duration` in its `REPORT` line. A cold call has one.
+
+I took these measurements before the change to OpenTelemetry, with 128 MB of memory and Lambda active tracing.
+Now the function has 512 MB, and each call sends its spans before it returns. So the duration changes.
+**After the tracing change (512 MB, OpenTelemetry).** The lab deployed the four services to its own account `lab-dev` on 2026-10-07 and loaded the web page.
+The first request of account after a deployment (the whole chain cold) took 1.2 to 1.3 s. A warm request took 139 ms (median). Core took 0.45 to 0.47 s for its first request.
+The value 3000 ms stays. It is above the first request, so a cold start does not fire the alarm. A core that hangs makes this function wait 5 s (the limit of its call to core), so a real fault fires it.
+The core README has the full table for 128, 256, 512 and 1024 MB.
+
 
 | Stage | Source and window | What | Result |
 | --- | --- | --- | --- |
@@ -189,6 +200,74 @@ The full steps are in "The Production drill" of the [core README](https://github
 
 The fault makes the function throw, so Lambda counts the error too. The 502 case, where the function does not throw, has a unit test and no drill.
 
+## Tracing
+
+This service makes one OpenTelemetry trace for each request. The trace goes on across the services: web calls this service, and this service calls core.
+
+Lambda active tracing is off. It would make a second trace for each call, and the two traces would not link.
+
+The section [Tracing](https://github.com/jross24/lab-svc-core#tracing) of the lab-svc-core README explains the decision, the measurements and the trade-off. This README does not copy it.
+
+### What the service records
+
+- **One server span for each request.** The wrapper `instrument` makes it and names it after the route, `GET /profile`. If the request has a `traceparent` header, the span continues the trace of the caller.
+- **One client span for each call to another service.** This service has one such call: the signed `GET /items` to core. The span is a child of the server span.
+
+The log line of a request has the field `traceId`. It is the trace ID of the server span, in the X-Ray form `1-xxxxxxxx-yyyyyyyyyyyyyyyyyyyyyyyy`.
+
+Each request ends with a flush: the function sends its spans before the handler returns. Lambda freezes the function after the return, and a frozen function cannot send.
+
+A failed export never fails a request. The exporter writes one log line with the message `trace export failed`.
+
+### How the trace crosses to core
+
+The function signs the request to core first (`lib/sign.ts`). Then `lib/core-client.ts` sends it with `tracing.fetch`, which adds the header `traceparent`.
+
+The signature lists only the `host` header and the `x-amz-` headers (`SignedHeaders`). So the new header does not break the signature.
+
+The trace does not use the header `X-Amzn-Trace-Id`. API Gateway adds a part of its own to that header, and Lambda ignores it for its own trace. The core README shows the test.
+
+The tests in `test/core-client.test.ts` prove this. Each test runs inside a server span with an in-memory exporter:
+
+- The fake fetch receives the signed headers unchanged, plus `traceparent`. The test signs the request again and compares the headers.
+- `SignedHeaders` does not list `traceparent` or `x-amzn-trace-id`.
+- The client span is a child of the server span, and `traceparent` carries the ID of the client span.
+- Outside a server span the headers do not change, and no span exists.
+- When core answers HTTP 403, the client span has the status error. The function still throws a `CoreError` with the same safe message.
+
+`test/profile-handler.test.ts` runs the real wrapper, the real handler and the real client. The trace ID is the same in the log line, in both spans and in the header that goes to core.
+
+### How to find a trace
+
+1. Take the value of `traceId` from a log line of the function.
+2. Run this command with a read-only profile:
+
+   ```
+   aws xray batch-get-traces --trace-ids <traceId> --profile <read-only-profile>
+   ```
+
+When web calls this service, the log lines of web, of this service and of core show the same trace ID.
+
+### What the stack sets for tracing
+
+- **One more IAM statement.** The function role gets `xray:PutTraceSegments` on the resource `*`. X-Ray actions do not support a resource. It is the only X-Ray action of the role.
+- **The OTLP endpoint of X-Ray.** The function sends its spans to `https://xray.<region>.amazonaws.com/v1/traces`. The request is signed with Signature Version 4 for the service `xray` (`lib/xray-exporter.ts`, `lib/sigv4.ts`).
+- **Transaction Search.** The endpoint works only when CloudWatch Transaction Search is on in the account. The stack of core turns it on. This stack does not touch it.
+- **512 MB of memory** (`FUNCTION_MEMORY_MB`). Lambda gives CPU in proportion to memory, and the export needs a TLS connection. The core README has the measurements.
+- **An ES module bundle** (`FUNCTION_BUNDLING`). The handler file is `index.mjs`. esbuild reads the `module` entry of each package and removes the code that no request uses.
+  A test in `test/app.test.ts` checks that the bundle is `index.mjs`, that there is no `index.js`, and that `index.mjs` is smaller than 200 KB.
+- **No layer, and no active tracing.** A test checks that the template has no `TracingConfig` and no layer.
+
+Outside Lambda the function has no name, so there is no tracing. The setting `TRACING=off` in the environment of the function switches it off in Lambda too.
+
+### What is the same as core
+
+These files are byte-identical copies of the files in core: `lib/tracing.ts`, `lib/xray-exporter.ts`, `lib/sigv4.ts`, `lib/function-defaults.ts` and `lib/instrument.ts`.
+The tests `test/tracing.test.ts`, `test/xray-exporter.test.ts` and `test/sigv4.test.ts` are copies too.
+
+`test/instrument.test.ts` is the test of core with three changes: the service name, the route key and the path.
+The client span in `lib/core-client.ts` and the X-Ray statement in `lib/account-stack.ts` belong to this repository.
+
 ## How a change reaches Production
 
 1. Open a pull request. The `pr` workflow runs lint, typecheck, the tests and `cdk synth`.
@@ -226,6 +305,7 @@ npm run synth
 ```
 
 The tests and the synthesis do not need AWS credentials or a network.
+The tests also read the bundle that `cdk synth` makes. They check that it is `index.mjs` and that it is small.
 
 ## Deploy to a personal account
 
@@ -249,13 +329,16 @@ The deployment-order rule applies here too. Deploy the `Dev` stage of lab-svc-co
 | `lib/app.ts` | Reads the context values and makes the stages. |
 | `lib/stages.ts` | The typed settings of each stage: log retention, the release type and the fault switch. |
 | `lib/account-stage.ts` | The CDK stage. |
-| `lib/account-stack.ts` | The stack: SSM lookups, function, IAM policy, alias and release, API, dashboard, SSM parameter, outputs. |
+| `lib/account-stack.ts` | The stack: SSM lookups, function (512 MB, ES module bundle), IAM policy for core and X-Ray, alias and release, API, dashboard, SSM parameter, outputs. |
 | `lib/gradual-release.ts` | Copy from core. The alias, the deployment group, the three alarms and the `Release` type. |
 | `lib/service-dashboard.ts` | Copy from core. The dashboard of a stage. |
-| `lib/instrument.ts`, `lib/logger.ts`, `lib/metrics.ts` | Copy from core. The wrapper of the handler, the log line and the metric line. |
+| `lib/instrument.ts`, `lib/logger.ts`, `lib/metrics.ts` | Copy from core. The wrapper of the handler (it makes the server span), the log line and the metric line. |
+| `lib/tracing.ts` | Copy from core. The class `Tracing`: server spans, client spans, the header `traceparent` and the flush. |
+| `lib/xray-exporter.ts`, `lib/sigv4.ts` | Copy from core. Send the spans to the OTLP endpoint of X-Ray, signed with Signature Version 4. |
+| `lib/function-defaults.ts` | Copy from core. The memory and the bundling options of the function. |
 | `lib/profile-handler.ts` | The Lambda handler, wrapped by `instrument`, and the fault switch. |
-| `lib/core-client.ts` | Calls `GET /items` of core and checks the answer. |
-| `lib/sign.ts` | Signs a request with AWS Signature Version 4. |
+| `lib/core-client.ts` | Calls `GET /items` of core as a client span and checks the answer. |
+| `lib/sign.ts` | Signs the request to core with AWS Signature Version 4 for `execute-api`. It is not the same file as `lib/sigv4.ts`, which signs for `xray`. |
 | `test/` | The unit tests (vitest). |
 | `.github/workflows/` | Three small files that call the workflows in lab-workflows. |
 

@@ -1,3 +1,5 @@
+import { readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { CloudAssembly, CloudFormationStackArtifact } from 'aws-cdk-lib/cx-api';
 import { createApp } from '../lib/app.ts';
@@ -77,6 +79,27 @@ describe('the app with no context', () => {
 
   it('uses the version 0.0.0-dev', () => {
     expect(versions(assembly)).toEqual(['0.0.0-dev', '0.0.0-dev', '0.0.0-dev']);
+  });
+});
+
+describe('the bundled Lambda code', () => {
+  const assembly = createApp().synth();
+
+  // The S3 key of the code is the hash of the asset, and the asset is the directory asset.<hash> in the cloud assembly.
+  function bundleDirectory(): string {
+    const [code] = lambdaCode(assembly) as { S3Key?: string }[];
+    return join(assembly.directory, `asset.${(code?.S3Key ?? '').replace(/.zip$/, '')}`);
+  }
+
+  it('is one ES module, index.mjs, and not a CommonJS file', () => {
+    const files = readdirSync(bundleDirectory());
+    expect(files).toContain('index.mjs');
+    expect(files).not.toContain('index.js');
+  });
+
+  it('is small, because esbuild removed the OpenTelemetry code that no request uses', () => {
+    // As a CommonJS bundle the same code is 641 KB. The module entries of the packages let esbuild remove most of it.
+    expect(statSync(join(bundleDirectory(), 'index.mjs')).size).toBeLessThan(200_000);
   });
 });
 

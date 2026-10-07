@@ -3,9 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
 import { RetentionDays } from 'aws-cdk-lib/aws-logs';
+import { SpanKind } from '@opentelemetry/api';
+import { InMemorySpanExporter } from '@opentelemetry/sdk-trace';
 import { AccountStack } from '../lib/account-stack.ts';
-import { CoreError } from '../lib/core-client.ts';
+import { CoreError, fetchCoreSummary } from '../lib/core-client.ts';
+import { instrument } from '../lib/instrument.ts';
 import { createHandler, handler } from '../lib/profile-handler.ts';
+import { Tracing } from '../lib/tracing.ts';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -181,6 +185,49 @@ describe('the exported handler when the core call fails', () => {
     const { log, metric } = fake.lines();
     expect(log).toMatchObject({ level: 'INFO', status: 200 });
     expect(metric).toMatchObject({ requests: 1, errors: 0 });
+  });
+});
+
+describe('the handler with tracing', () => {
+  const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
+  const PARENT = '00f067aa0ba902b7';
+
+  it('uses one trace ID in the log line, in the spans, and in the header traceparent that goes to core', async () => {
+    const memory = new InMemorySpanExporter();
+    const tracing = Tracing.create({ service: 'account', version: '1.2.3', exporter: memory });
+    const sent: Record<string, string>[] = [];
+    const written: string[] = [];
+    // The real wrapper, the real handler and the real core client. Only the network and the output are fake.
+    const traced = instrument(
+      { service: 'account', tracing, write: (line) => written.push(line) },
+      createHandler(() =>
+        fetchCoreSummary({
+          tracing,
+          env: {
+            CORE_URL: 'https://abc123.execute-api.eu-west-2.amazonaws.com',
+            AWS_REGION: 'eu-west-2',
+            // Fake values. The credentials are the example values from the AWS documentation and open nothing.
+            AWS_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
+            AWS_SECRET_ACCESS_KEY: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+          },
+          fetch: async (_url, init) => {
+            sent.push(init.headers);
+            return Response.json({ service: 'core', version: '0.3.0', items: [{ id: 'item-1' }] });
+          },
+        }),
+      ),
+    );
+    const event = { ...EVENT, headers: { traceparent: `00-${TRACE}-${PARENT}-01` } } as APIGatewayProxyEventV2;
+
+    const response = await traced(event, CONTEXT);
+
+    expect(response.statusCode).toBe(200);
+    const spans = memory.getFinishedSpans();
+    expect(spans.map((span) => span.kind).sort()).toEqual([SpanKind.SERVER, SpanKind.CLIENT].sort());
+    expect(spans.every((span) => span.spanContext().traceId === TRACE)).toBe(true);
+    expect((JSON.parse(written[0] ?? 'null') as LogLine).traceId).toBe('1-4bf92f35-77b34da6a3ce929d0e0e4736');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.traceparent).toMatch(new RegExp(`^00-${TRACE}-[0-9a-f]{16}-01$`));
   });
 });
 

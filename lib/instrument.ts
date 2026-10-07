@@ -1,17 +1,22 @@
+import { SpanStatusCode } from '@opentelemetry/api';
 import type { APIGatewayProxyEventV2, Context } from 'aws-lambda';
 import { formatLogLine } from './logger.ts';
 import { formatMetricLine } from './metrics.ts';
+import { tracingFor, xrayTraceId } from './tracing.ts';
+import type { Tracing } from './tracing.ts';
 
 type Env = Record<string, string | undefined>;
 
 export interface InstrumentOptions {
   readonly service: string;
-  // The tests replace the four fields below. In Lambda the defaults are right.
+  // The tests replace the fields below. In Lambda the defaults are right.
   readonly env?: () => Env;
   readonly write?: (line: string) => void;
   // The clock for the duration, in milliseconds.
   readonly clock?: () => number;
   readonly now?: () => Date;
+  // The default is the tracing of the function: OpenTelemetry in Lambda, and no tracing elsewhere.
+  readonly tracing?: Tracing;
 }
 
 // Not console.log. The runtime of Lambda changes the output of console.log, and then the line is no
@@ -21,6 +26,7 @@ function writeToStdout(line: string): void {
 }
 
 // Lambda sets _X_AMZN_TRACE_ID for each call, for example "Root=1-...;Parent=...;Sampled=1".
+// The log line uses it only when OpenTelemetry is off. Then it is the trace of Lambda itself (active tracing).
 export function traceIdOf(env: Env): string | undefined {
   return /(?:^|;)Root=([^;]+)/.exec(env._X_AMZN_TRACE_ID ?? '')?.[1];
 }
@@ -36,6 +42,9 @@ export interface Signals {
 // one metric line, also when the handler throws. A thrown error goes on to Lambda, because only
 // then does the Errors metric of Lambda count the call, and that metric is the release gate.
 // The metric line counts an error for a status of 500 or more, and for a call that the handler marked as degraded.
+//
+// The wrapper also makes the server span of the request. The span continues the trace of a caller (the header
+// traceparent), and the log line carries the trace ID. The spans leave when the request ends.
 export function instrument<T extends { readonly statusCode: number }>(
   options: InstrumentOptions,
   handler: (event: APIGatewayProxyEventV2, context: Context, signals: Signals) => Promise<T>,
@@ -44,6 +53,7 @@ export function instrument<T extends { readonly statusCode: number }>(
   const write = options.write ?? writeToStdout;
   const clock = options.clock ?? ((): number => performance.now());
   const now = options.now ?? ((): Date => new Date());
+  const tracing = options.tracing ?? tracingFor(options.service);
   // Lambda loads the module one time for each execution environment, so this wrapper lives as long as the
   // environment. Its first request is the cold start.
   let firstRequest = true;
@@ -51,44 +61,57 @@ export function instrument<T extends { readonly statusCode: number }>(
   return async (event, context) => {
     const coldStart = firstRequest;
     firstRequest = false;
-    const started = clock();
-    const signals: Signals = {};
-    let status = 500;
-    let error: string | undefined;
-    try {
-      const response = await handler(event, context, signals);
-      status = response.statusCode;
-      return response;
-    } catch (caught) {
-      error = caught instanceof Error ? caught.message : 'unknown error';
-      throw caught;
-    } finally {
-      const env = read();
-      const version = env.VERSION ?? 'unknown';
-      const durationMs = clock() - started;
-      write(
-        formatLogLine(
-          {
-            service: options.service,
-            version,
-            requestId: context.awsRequestId,
-            route: event.routeKey,
-            status,
-            durationMs,
-            traceId: traceIdOf(env),
-            error,
-            coldStart,
-            degraded: signals.degraded,
-          },
-          now(),
-        ),
-      );
-      write(
-        formatMetricLine(
-          { service: options.service, version, errors: status >= 500 || signals.degraded !== undefined ? 1 : 0, durationMs },
-          now(),
-        ),
-      );
-    }
+
+    return tracing.serve(
+      {
+        name: event.routeKey,
+        headers: event.headers,
+        attributes: {
+          'http.request.method': event.requestContext?.http?.method,
+          'url.path': event.rawPath,
+          'faas.invocation_id': context.awsRequestId,
+          'faas.coldstart': coldStart,
+        },
+      },
+      async (span) => {
+        const started = clock();
+        const signals: Signals = {};
+        let status = 500;
+        let error: string | undefined;
+        try {
+          const response = await handler(event, context, signals);
+          status = response.statusCode;
+          return response;
+        } catch (caught) {
+          error = caught instanceof Error ? caught.message : 'unknown error';
+          throw caught;
+        } finally {
+          const env = read();
+          const version = env.VERSION ?? 'unknown';
+          const durationMs = clock() - started;
+          const isError = status >= 500 || signals.degraded !== undefined;
+          span.setAttribute('http.response.status_code', status);
+          if (isError) span.setStatus({ code: SpanStatusCode.ERROR, message: error ?? signals.degraded ?? `HTTP ${status}` });
+          write(
+            formatLogLine(
+              {
+                service: options.service,
+                version,
+                requestId: context.awsRequestId,
+                route: event.routeKey,
+                status,
+                durationMs,
+                traceId: xrayTraceId(span) ?? traceIdOf(env),
+                error,
+                coldStart,
+                degraded: signals.degraded,
+              },
+              now(),
+            ),
+          );
+          write(formatMetricLine({ service: options.service, version, errors: isError ? 1 : 0, durationMs }, now()));
+        }
+      },
+    );
   };
 }

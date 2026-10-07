@@ -3,6 +3,7 @@ import { App } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { RetentionDays } from 'aws-cdk-lib/aws-logs';
 import { AccountStack, FUNCTION_TIMEOUT, LATENCY_P99_THRESHOLD_MS } from '../lib/account-stack.ts';
+import { FUNCTION_MEMORY_MB } from '../lib/function-defaults.ts';
 import type { StageConfig } from '../lib/stages.ts';
 
 const ALL_AT_ONCE: StageConfig['release'] = { kind: 'allAtOnce' };
@@ -71,7 +72,7 @@ describe('AccountStack', () => {
     expect(FUNCTION_TIMEOUT.toSeconds()).toBe(10);
   });
 
-  it('allows the function to invoke only the core API ARN from SSM, and to send segments to X-Ray', () => {
+  it('allows the function to invoke only the core API ARN from SSM, and to send spans to X-Ray', () => {
     // The alias runs with the role of the function. So this one policy serves the alias too.
     template.resourceCountIs('AWS::IAM::Policy', 1);
     const [policy] = Object.values(template.findResources('AWS::IAM::Policy')) as {
@@ -84,11 +85,7 @@ describe('AccountStack', () => {
       Effect: 'Allow',
       Resource: { Ref: ssmParameterId(template, '/lab/core/api-arn') },
     });
-    expect(statements).toContainEqual({
-      Action: ['xray:PutTraceSegments', 'xray:PutTelemetryRecords'],
-      Effect: 'Allow',
-      Resource: '*',
-    });
+    expect(statements).toContainEqual({ Action: 'xray:PutTraceSegments', Effect: 'Allow', Resource: '*' });
   });
 
   it('keeps the logs for the number of days in the stage config', () => {
@@ -353,31 +350,53 @@ describe('the alarms', () => {
   });
 });
 
+describe('the function settings', () => {
+  const { template } = base;
+
+  it('has 512 MB of memory, so the first request does not wait for the trace export for long', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', { MemorySize: FUNCTION_MEMORY_MB });
+    expect(FUNCTION_MEMORY_MB).toBe(512);
+  });
+
+  it('uses the handler index.handler of an ES module', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', { Handler: 'index.handler' });
+  });
+});
+
 describe('tracing', () => {
   const { template } = base;
 
-  it('turns on active tracing of the function', () => {
-    template.hasResourceProperties('AWS::Lambda::Function', { TracingConfig: { Mode: 'Active' } });
+  it('does not turn on active tracing of Lambda, because OpenTelemetry makes the traces', () => {
+    // Active tracing would make a second trace for each call, with another trace ID.
+    const [fn] = Object.values(template.findResources('AWS::Lambda::Function')) as { Properties: { TracingConfig?: unknown } }[];
+    expect(fn?.Properties.TracingConfig).toBeUndefined();
   });
 
-  it('lets the function role send segments to X-Ray', () => {
+  it('lets the function role send spans to X-Ray, and nothing else of X-Ray', () => {
     template.hasResourceProperties('AWS::IAM::Policy', {
       PolicyDocument: {
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Action: ['xray:PutTraceSegments', 'xray:PutTelemetryRecords'],
-            Effect: 'Allow',
-          }),
-        ]),
+        Statement: Match.arrayWith([Match.objectLike({ Action: 'xray:PutTraceSegments', Effect: 'Allow', Resource: '*' })]),
       },
     });
+    expect(JSON.stringify(template.toJSON())).not.toContain('xray:PutTelemetryRecords');
+    // The one X-Ray action in all the statements of all the policies.
+    const policies = Object.values(template.findResources('AWS::IAM::Policy')) as {
+      Properties: { PolicyDocument: { Statement: { Action: string | string[] }[] } };
+    }[];
+    const actions = policies.flatMap((policy) => policy.Properties.PolicyDocument.Statement.flatMap((statement) => statement.Action));
+    expect(actions.filter((action) => action.startsWith('xray:'))).toEqual(['xray:PutTraceSegments']);
   });
 
-  it('uses no Lambda layer', () => {
+  it('uses no Lambda layer, so no account ID of another publisher is in the template', () => {
     const functions = Object.values(template.findResources('AWS::Lambda::Function')) as {
       Properties: { Layers?: unknown };
     }[];
     expect(functions[0]?.Properties.Layers).toBeUndefined();
+  });
+
+  it('does not touch CloudWatch Transaction Search, which the core stack turns on for the account', () => {
+    template.resourceCountIs('AWS::XRay::TransactionSearchConfig', 0);
+    template.resourceCountIs('AWS::Logs::ResourcePolicy', 0);
   });
 });
 
