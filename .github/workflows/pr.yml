@@ -12,6 +12,6 @@ permissions:
 
 jobs:
   pr:
-    uses: jross24/lab-workflows/.github/workflows/pr.yml@main
+    uses: jross24/lab-workflows/.github/workflows/pr.yml@feat/pr-diff-job
     # The diff job reads the repository secret PR_ACCOUNT_ID_PRODUCTION.
     secrets: inherit
