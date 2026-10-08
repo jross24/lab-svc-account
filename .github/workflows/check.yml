@@ -1,0 +1,35 @@
+name: check
+run-name: check ${{ inputs.environment }}
+
+# A dry run of the checks before a deployment. It deploys nothing and changes nothing.
+# Start it with: gh workflow run check.yml -f environment=staging
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: The environment to read
+        required: true
+        type: choice
+        options: [test, staging, production]
+      version:
+        description: The version to check, for example 1.2.3. Leave it empty to skip the check of the release itself.
+        required: false
+        type: string
+      requires:
+        description: 'A JSON object that replaces "requires" for this run only, for example {"core":">=9.9.9"}'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # the OIDC login to AWS
+
+jobs:
+  check:
+    uses: jross24/lab-workflows/.github/workflows/check.yml@preflight
+    with:
+      environment: ${{ inputs.environment }}
+      version: ${{ inputs.version }}
+      requires: ${{ inputs.requires }}
+    # The job reads the secret AWS_ACCOUNT_ID of its GitHub environment.
+    secrets: inherit
