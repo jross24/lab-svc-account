@@ -79,6 +79,10 @@ The README of [lab-workflows](https://github.com/jross24/lab-workflows) explains
 CloudFormation reads the parameters again at each deployment of this stack.
 If core gets a new URL, release or redeploy this service to pick it up.
 
+To ask "could this service go to that environment now?" without a release, start the dry run:
+`gh workflow run check.yml --repo jross24/lab-svc-account -f environment=staging`. It reads SSM and deploys nothing.
+The input `requires` replaces the requirements of `pipeline.json` for that run only, so you can see the failure message of a check.
+
 ## Stages
 
 One `cdk synth` makes three CDK stages: `Test`, `Staging` and `Production`.
