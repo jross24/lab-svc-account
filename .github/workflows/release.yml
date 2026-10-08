@@ -4,10 +4,8 @@ on:
   push:
     branches: [main]
 
-# A second release waits for the first one. GitHub does not cancel a deployment that is in progress.
-concurrency:
-  group: release
-  cancel-in-progress: false
+# TEMPORARY: this run tests the next version of the release workflow from the branch "preflight" of lab-workflows.
+# No concurrency group for the whole run. The release workflow orders the jobs of each environment by itself.
 
 permissions:
   contents: write # the version tag and the GitHub release
@@ -16,6 +14,6 @@ permissions:
 
 jobs:
   release:
-    uses: jross24/lab-workflows/.github/workflows/release.yml@main
+    uses: jross24/lab-workflows/.github/workflows/release.yml@preflight
     # The deploy jobs read the secret AWS_ACCOUNT_ID of their GitHub environment.
     secrets: inherit
