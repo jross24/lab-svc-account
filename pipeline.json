@@ -1,0 +1,6 @@
+{
+  "service": "account",
+  "requires": {
+    "core": ">=0.5.0"
+  }
+}
