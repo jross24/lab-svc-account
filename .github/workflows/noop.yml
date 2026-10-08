@@ -1,0 +1,10 @@
+name: noop
+# A throwaway valid workflow. It exists only in a test pull request that is never merged.
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  hello:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "event ${{ github.event_name }}"
