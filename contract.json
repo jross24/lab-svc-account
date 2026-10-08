@@ -1,0 +1,37 @@
+{
+  "service": "account",
+  "consumers": ["web"],
+  "endpoints": {
+    "GET /profile": {
+      "request": { "required": [], "optional": [] },
+      "responses": {
+        "200": {
+          "type": "object",
+          "required": ["service", "version", "core", "profile"],
+          "properties": {
+            "service": { "type": "string", "description": "The name of the service. Always account." },
+            "version": { "type": "string", "description": "The version of the release that answered." },
+            "core": {
+              "type": "object",
+              "description": "Proof that the answer passed through the core service.",
+              "required": ["version", "itemCount"],
+              "properties": {
+                "version": { "type": "string", "description": "The version of core that answered." },
+                "itemCount": { "type": "integer", "description": "The number of items that core returned." }
+              }
+            },
+            "profile": {
+              "type": "object",
+              "required": ["id", "name", "plan"],
+              "properties": {
+                "id": { "type": "string" },
+                "name": { "type": "string", "description": "The name of the user. It belongs to the profile, not to an item of core." },
+                "plan": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
