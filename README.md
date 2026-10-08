@@ -117,8 +117,7 @@ This service uses the pattern of [lab-svc-core](https://github.com/jross24/lab-s
 - The alarms `ErrorsAlarm` and `LatencyAlarm` on the alias. The deployment group watches them and rolls back.
 - One JSON log line and one embedded-metric line for each request, with the dimensions `service` and `version`.
 - OpenTelemetry tracing, with no Lambda active tracing, and the fault switch `injectFault`. See "Tracing".
-- Nine files in `lib/`. They are byte-identical copies of the files in core: `gradual-release.ts`, `service-dashboard.ts`, `instrument.ts`, `logger.ts`, `metrics.ts`, `tracing.ts`, `xray-exporter.ts`, `sigv4.ts` and `function-defaults.ts`.
-- The tests `test/tracing.test.ts`, `test/xray-exporter.test.ts`, `test/sigv4.test.ts` and `test/function-defaults.test.ts`. They are byte-identical copies too.
+- The shared files are pinned copies of `shared/` in lab-workflows: 9 files in `lib/`, 7 tests and `test/support/contract-schema.ts`. `shared.lock.json` names the commit, and the job `shared` of the pull request check fails when a copy is not byte-equal to that commit. To change a shared file, change it in lab-workflows, then run `node actions/shared-files/sync.mjs <path to this repository>` in a clone of lab-workflows (see the section "Shared files" of its README).
 - The first release that contains this change creates the alias and goes to each stage without a canary.
 
 ### What is different from core
@@ -293,8 +292,8 @@ Outside Lambda the function has no name, so there is no tracing. The setting `TR
 
 ### What is the same as core
 
-These files are byte-identical copies of the files in core: `lib/tracing.ts`, `lib/xray-exporter.ts`, `lib/sigv4.ts`, `lib/function-defaults.ts` and `lib/instrument.ts`.
-The tests `test/tracing.test.ts`, `test/xray-exporter.test.ts`, `test/sigv4.test.ts` and `test/function-defaults.test.ts` are copies too.
+These files are shared files: `lib/tracing.ts`, `lib/xray-exporter.ts`, `lib/sigv4.ts`, `lib/function-defaults.ts` and `lib/instrument.ts`. Their tests are shared files too.
+To change one, change it in lab-workflows, then run `node actions/shared-files/sync.mjs <path to this repository>` in a clone of lab-workflows.
 
 `test/instrument.test.ts` is the test of core with three changes: the service name, the route key and the path.
 The client span in `lib/core-client.ts` and the X-Ray statement in `lib/account-stack.ts` belong to this repository.
@@ -378,16 +377,17 @@ The deployment-order rule applies here too. Deploy the `Dev` stage of lab-svc-co
 | `lib/stages.ts` | The typed settings of each stage: log retention, the release type and the fault switch. |
 | `lib/account-stage.ts` | The CDK stage. |
 | `lib/account-stack.ts` | The stack: SSM lookups, function (512 MB, ES module bundle), IAM policy for core and X-Ray, alias and release, API, dashboard, SSM parameters, outputs. |
-| `lib/gradual-release.ts` | Copy from core. The alias, the deployment group, the three alarms and the `Release` type. |
-| `lib/service-dashboard.ts` | Copy from core. The dashboard of a stage. |
-| `lib/instrument.ts`, `lib/logger.ts`, `lib/metrics.ts` | Copy from core. The wrapper of the handler (it makes the server span), the log line and the metric line. |
-| `lib/tracing.ts` | Copy from core. The class `Tracing`: server spans, client spans, the header `traceparent` and the flush. |
-| `lib/xray-exporter.ts`, `lib/sigv4.ts` | Copy from core. Send the spans to the OTLP endpoint of X-Ray, signed with Signature Version 4. |
-| `lib/function-defaults.ts` | Copy from core. The memory and the bundling options of the function. |
+| `lib/gradual-release.ts` | Shared file. The alias, the deployment group, the three alarms and the `Release` type. |
+| `lib/service-dashboard.ts` | Shared file. The dashboard of a stage. |
+| `lib/instrument.ts`, `lib/logger.ts`, `lib/metrics.ts` | Shared file. The wrapper of the handler (it makes the server span), the log line and the metric line. |
+| `lib/tracing.ts` | Shared file. The class `Tracing`: server spans, client spans, the header `traceparent` and the flush. |
+| `lib/xray-exporter.ts`, `lib/sigv4.ts` | Shared file. Send the spans to the OTLP endpoint of X-Ray, signed with Signature Version 4. |
+| `lib/function-defaults.ts` | Shared file. The memory and the bundling options of the function. |
 | `lib/profile-handler.ts` | The Lambda handler, wrapped by `instrument`, and the fault switch. |
 | `lib/core-client.ts` | Calls `GET /items` of core as a client span and checks the answer. |
 | `lib/sign.ts` | Signs the request to core with AWS Signature Version 4 for `execute-api`. It is not the same file as `lib/sigv4.ts`, which signs for `xray`. |
-| `test/` | The unit tests (vitest). `test/support/contract-schema.ts` is a copy from core. |
+| `shared.lock.json` | The pin: the commit of lab-workflows that the shared files come from. |
+| `test/` | The unit tests (vitest). The shared tests and `test/support/contract-schema.ts` are shared files. |
 | `contract.json` | What this service promises in the answer of `GET /profile`. |
 | `expectations.json` | What this service reads from core. |
 | `pipeline.json` | The name of the service and the services that it needs. The pipeline reads it. |

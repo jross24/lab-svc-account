@@ -36,6 +36,11 @@ export function traceIdOf(env: Env): string | undefined {
 // The handler sets "degraded" to a short reason. The wrapper then counts the call as an error and logs the reason.
 export interface Signals {
   degraded?: string;
+  // A handler that reads feature flags reports the value that it used for each flag, where the values came from, and
+  // whether a request header overrode them. The wrapper writes the three fields into the log line.
+  flags?: Readonly<Record<string, boolean>>;
+  flagsSource?: 'appconfig' | 'default';
+  flagsOverridden?: boolean;
 }
 
 // Wraps a handler of an HTTP API (payload format 2.0). For each request it writes one log line and
@@ -105,6 +110,9 @@ export function instrument<T extends { readonly statusCode: number }>(
                 error,
                 coldStart,
                 degraded: signals.degraded,
+                flags: signals.flags,
+                flagsSource: signals.flagsSource,
+                flagsOverridden: signals.flagsOverridden,
               },
               now(),
             ),
