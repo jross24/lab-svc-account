@@ -15,8 +15,10 @@ on:
         type: choice
         options: [test, staging, production]
 
+# contents: write is for the job "record" of the shared workflow. After a redeploy to Production it marks the release that now runs there
+# (the asset deployed-production.json). A called workflow cannot get more permission than the caller gives. The jobs that deploy keep contents: read.
 permissions:
-  contents: read
+  contents: write
   id-token: write # the OIDC login to AWS
 
 jobs:

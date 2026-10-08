@@ -1,0 +1,20 @@
+{
+  "service": "account",
+  "expects": {
+    "core": {
+      "GET /items": {
+        "sends": [],
+        "responses": {
+          "200": {
+            "type": "object",
+            "required": ["version", "items"],
+            "properties": {
+              "version": { "type": "string", "description": "The client shows it in the field core.version of the profile." },
+              "items": { "type": "array", "description": "The client counts the items. It reads no field of an item, so it needs neither name nor title." }
+            }
+          }
+        }
+      }
+    }
+  }
+}

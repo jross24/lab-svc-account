@@ -19,8 +19,8 @@ const CORE_BODY = {
   service: 'core',
   version: '0.3.0',
   items: [
-    { id: 'item-1', name: 'First item' },
-    { id: 'item-2', name: 'Second item' },
+    { id: 'item-1', title: 'First item' },
+    { id: 'item-2', title: 'Second item' },
   ],
 };
 

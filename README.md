@@ -280,6 +280,13 @@ The tests `test/tracing.test.ts`, `test/xray-exporter.test.ts` and `test/sigv4.t
 `test/instrument.test.ts` is the test of core with three changes: the service name, the route key and the path.
 The client span in `lib/core-client.ts` and the X-Ray statement in `lib/account-stack.ts` belong to this repository.
 
+## Contract tests
+
+The file `contract.json` says what this service promises in the answer of `GET /profile`. The web application reads that answer.
+The file `expectations.json` says what this service reads from `GET /items` of core: the fields `version` and `items`. It reads no field of an item, so it does not depend on `name` or `title`.
+The job `pr / contracts` compares each file with the file of the release that runs in Production now, and the release assets `contract.json` and `deployed-production.json` tell it which release that is.
+The job fails a pull request that removes a field which Production still has, or that expects a field which the Production contract of core does not have. The [README of lab-workflows](https://github.com/jross24/lab-workflows#contract-tests) explains the rules.
+
 ## How a change reaches Production
 
 1. Open a pull request. The `pr` workflow runs lint, typecheck, the tests and `cdk synth`. It also scans the dependencies and the commits for secrets, and it checks the workflow files. It posts the `cdk diff` against Production as one comment. A delete or a replacement of a stateful resource fails the check until someone adds the label `destructive-change-approved`. The [README of lab-workflows](https://github.com/jross24/lab-workflows#the-cdk-diff-comment) explains the comment.
@@ -361,7 +368,9 @@ The deployment-order rule applies here too. Deploy the `Dev` stage of lab-svc-co
 | `lib/profile-handler.ts` | The Lambda handler, wrapped by `instrument`, and the fault switch. |
 | `lib/core-client.ts` | Calls `GET /items` of core as a client span and checks the answer. |
 | `lib/sign.ts` | Signs the request to core with AWS Signature Version 4 for `execute-api`. It is not the same file as `lib/sigv4.ts`, which signs for `xray`. |
-| `test/` | The unit tests (vitest). |
+| `test/` | The unit tests (vitest). `test/support/contract-schema.ts` is a copy from core. |
+| `contract.json` | What this service promises in the answer of `GET /profile`. |
+| `expectations.json` | What this service reads from core. |
 | `pipeline.json` | The name of the service and the services that it needs. The pipeline reads it. |
 | `.github/workflows/` | Four small files that call the workflows in lab-workflows: `pr`, `release`, `redeploy` and `check` (the dry run). |
 
