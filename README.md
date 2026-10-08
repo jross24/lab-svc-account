@@ -52,6 +52,7 @@ The core stack writes two SSM parameters in each account where it runs.
 
 CloudFormation reads the two parameters at deployment. The CDK does not read them at synth.
 So the templates name no account, and one `cdk synth` still serves each account.
+A copy in the `Dev` stage can read the parameters of a preview of core instead. See "Namespaces".
 
 The API of core uses IAM authorisation. So the function signs each request with AWS Signature Version 4.
 It signs with the temporary credentials of its own role. The Lambda runtime puts them in environment variables.
@@ -335,7 +336,7 @@ To roll back while a release waits for the reviewer in Production, reject or can
 A redeploy to Production is also a canary. Do not redeploy a release from before the gradual release (`0.1.0` and `0.1.1`).
 Those releases have no alias. A redeploy of one removes the alias, the deployment group, the alarms and the dashboard.
 
-The four files in `.github/workflows/` call the workflows of lab-workflows. This repository has no other pipeline code. The files `pr`, `redeploy` and `check` are the same in all four services.
+The five files in `.github/workflows/` call the workflows of lab-workflows. This repository has no other pipeline code. The files `pr`, `redeploy` and `check` are the same in all four services.
 The file `release` is the same too, except for the reference to the workflow of lab-workflows.
 
 ## Run the checks locally
@@ -367,6 +368,103 @@ npx cdk destroy -c dev=true "Dev/*" --profile <your-dev-profile>
 ```
 
 The deployment-order rule applies here too. Deploy the `Dev` stage of lab-svc-core to the account first.
+The `Dev` stage has the alias, the deployment group, the alarms and the dashboard too. It releases all at once.
+
+With no other context value, the `Dev` stage is the **baseline copy** of the account. It uses the fixed names of the table below.
+The web application of the account reads `/lab/account/url`, so the baseline copy is the copy that it calls.
+An account holds one baseline copy, and it stays deployed. To run a second copy, use a namespace.
+
+### Namespaces
+
+A namespace gives a copy of the `Dev` stage names of its own. So a second copy can live in the same account and not touch the baseline copy.
+Use it for a copy on your laptop. The pipeline uses it for the preview of a pull request.
+
+```
+npx cdk deploy -c dev=true -c namespace=my-test -c version=0.0.0-my-test "Dev/*" --profile <your-dev-profile>
+npx cdk destroy -c dev=true -c namespace=my-test "Dev/*" --profile <your-dev-profile>
+```
+
+The rules for the context value `namespace`:
+
+- It is valid only together with `dev=true`. With `dev` off, the app stops with an error.
+- It has 1 to 20 characters. The first character is a letter from `a` to `z`.
+- The other characters are the letters `a` to `z`, the digits `0` to `9` and `-`. The last character is not `-`.
+- The app stops with an error for any other value. The message shows the value and an example.
+- The pipeline stages never read it.
+
+The names that the namespace changes:
+
+| | No namespace (baseline copy) | Namespace `<ns>` | Example, namespace `pr-12` |
+| --- | --- | --- | --- |
+| Stack name | `lab-svc-account` | `lab-svc-account-<ns>` | `lab-svc-account-pr-12` |
+| SSM parameter with the URL | `/lab/account/url` | `/lab/ns/<ns>/account/url` | `/lab/ns/pr-12/account/url` |
+| SSM parameter with the version | `/lab/account/version` | `/lab/ns/<ns>/account/version` | `/lab/ns/pr-12/account/version` |
+| Dashboard name | `lab-svc-account` | `lab-svc-account-<ns>` | `lab-svc-account-pr-12` |
+| Tag on the stack and its resources | none | `lab-namespace=<ns>` | `lab-namespace=pr-12` |
+
+Nothing else of the stack has a fixed name. CloudFormation builds the other names from the stack name, so they are unique too.
+This holds for the function, the log group, the role, the alarms, the API and the CodeDeploy application.
+The alias `live` belongs to one function, so it is the same in each copy. The stack has no output with an export name.
+A unit test compares all Name-like properties of two namespaces. It fails when a new fixed name appears.
+
+The code is in `lib/namespace.ts`. It does not change the nine shared files.
+The shared dashboard code always names the dashboard `lab-svc-account`. So the stack sets the new name on the `CfnDashboard` with `addPropertyOverride`.
+The property `dashboardName` of the construct keeps the old value. Nothing reads it.
+With no namespace, the stack has no tag and no `/lab/ns/` path, and every template is the same as before. A unit test checks this in each stage.
+
+**The reserved prefix.** The namespace `pr-<number>`, for example `pr-12`, belongs to the pipeline.
+The pipeline deploys the preview of a pull request under that name and deletes it when the pull request closes.
+Do not use a name that starts with `pr-` on a laptop.
+
+**How a laptop copy and a preview live together.** Each copy has its own stack, URL parameter and dashboard.
+So the baseline copy, the laptop copy `my-test` and the preview `pr-12` can run together in one account.
+`cdk destroy` of a namespace deletes only the stack with that namespace in its name.
+
+**Core.** A copy with a namespace still reads `/lab/core/url` and `/lab/core/api-arn`. So it calls the baseline copy of core.
+Deploy the baseline copy of core first. A preview of this service finds core in the long-lived baseline of the account.
+To call a preview of core instead, add the context value `coreNamespace`. It names the namespace of that preview of core:
+
+```
+npx cdk deploy -c dev=true -c namespace=my-test -c coreNamespace=pr-21 -c version=0.0.0-my-test "Dev/*" --profile <your-dev-profile>
+```
+
+The copy then reads `/lab/ns/pr-21/core/url` and `/lab/ns/pr-21/core/api-arn`. It writes its own parameters only under `/lab/ns/my-test/`.
+The rules for `coreNamespace` are the rules for `namespace`, and one more:
+
+- It is valid only together with `namespace`. The baseline copy of the account must not point at a preview of core, because the preview goes away when its pull request closes.
+
+The preview of core must exist when CloudFormation deploys this stack. If the parameters are not there, the deployment fails before it creates a resource.
+CloudFormation reads the parameters at each deployment, as it does for the baseline. The pipeline does not set `coreNamespace`. Use it on a laptop.
+
+**The version.** Give each copy its own `version`. The version is a dimension of the metrics `requests` and `errors`.
+`ServiceErrorsAlarm` reads the dimension. Two copies with the same version share their metric lines. So the alarm of one copy can fire on the errors of the other.
+The pipeline uses a version such as `0.0.0-pr12.abc1234`. The default `0.0.0-dev` belongs to the baseline copy.
+
+**The dashboard.** The graphs "Requests by version" and "Errors that the service counted, by version" search by the service name.
+They show the versions of all copies of the service in the account. Look for the line of your own version.
+
+**What the pipeline runs.** The synth and the deployment use the same commands as for a release. The assembly holds only the stage `Dev`.
+
+```
+npx cdk synth -c dev=true -c namespace=pr-12 -c version=0.0.0-pr12.abc1234
+npx cdk deploy --app cdk.out "Dev/*" --require-approval never
+npx cdk destroy --app cdk.out "Dev/*" --force
+```
+
+### The preview of a pull request
+
+A pull request with the label `preview` gets its own copy of this service in the developer account.
+The workflow `.github/workflows/preview.yml` calls the shared workflow of lab-workflows. It deploys the `Dev` stage under the namespace `pr-<number>`, for example `pr-12`.
+
+- A comment on the pull request shows the URL. Call `GET <URL>/profile`. The API is public, so no signature is needed.
+  The answer has the version of the pull request, `0.0.0-pr12.<commit>`, and the block `core` with the data of core.
+- The workflow itself calls `GET /profile` after the deployment and expects HTTP 200. The answer is 502 when the copy cannot call core.
+- A push to the pull request deploys the new commit to the same URL.
+- The copy reads core from the baseline copy of the account. The workflow does not set `coreNamespace`.
+- When the pull request closes, or when you remove the label, the workflow removes the stack. A scheduled workflow removes any copy that stays behind.
+
+The names are in the table of "Namespaces". The README of [lab-workflows](https://github.com/jross24/lab-workflows#the-temporary-environment-of-a-pull-request) explains the jobs and the security note.
+A person with write access can deploy anything to the developer account with this label. The account is the fence, see that README.
 
 ## Layout
 
@@ -376,6 +474,7 @@ The deployment-order rule applies here too. Deploy the `Dev` stage of lab-svc-co
 | `lib/app.ts` | Reads the context values and makes the stages. |
 | `lib/stages.ts` | The typed settings of each stage: log retention, the release type and the fault switch. |
 | `lib/account-stage.ts` | The CDK stage. |
+| `lib/namespace.ts` | The context value `namespace`: the check of the value, the tag and the names of a copy. It also holds the names of the parameters of core, with or without `coreNamespace`. |
 | `lib/account-stack.ts` | The stack: SSM lookups, function (512 MB, ES module bundle), IAM policy for core and X-Ray, alias and release, API, dashboard, SSM parameters, outputs. |
 | `lib/gradual-release.ts` | Shared file. The alias, the deployment group, the three alarms and the `Release` type. |
 | `lib/service-dashboard.ts` | Shared file. The dashboard of a stage. |
@@ -391,7 +490,7 @@ The deployment-order rule applies here too. Deploy the `Dev` stage of lab-svc-co
 | `contract.json` | What this service promises in the answer of `GET /profile`. |
 | `expectations.json` | What this service reads from core. |
 | `pipeline.json` | The name of the service and the services that it needs. The pipeline reads it. |
-| `.github/workflows/` | Four small files that call the workflows in lab-workflows: `pr`, `release`, `redeploy` and `check` (the dry run). |
+| `.github/workflows/` | Five small files that call the workflows in lab-workflows: `pr`, `release`, `redeploy`, `check` (the dry run) and `preview` (the copy of a pull request). |
 
 ## Release gate
 
