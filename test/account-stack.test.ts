@@ -15,7 +15,7 @@ const MEASURED_WARM_P99_MS = 914;
 function synth(version = '1.2.3', config: Partial<StageConfig> = {}) {
   const stack = new AccountStack(new App(), 'Account', {
     version,
-    config: { logRetentionDays: RetentionDays.ONE_WEEK, release: ALL_AT_ONCE, injectFault: false, ...config },
+    config: { logRetentionDays: RetentionDays.ONE_WEEK, release: ALL_AT_ONCE, injectFault: false, traceSampleRatio: 1, ...config },
   });
   return { stack, template: Template.fromStack(stack) };
 }
@@ -86,6 +86,20 @@ describe('AccountStack', () => {
       Resource: { Ref: ssmParameterId(template, '/lab/core/api-arn') },
     });
     expect(statements).toContainEqual({ Action: 'xray:PutTraceSegments', Effect: 'Allow', Resource: '*' });
+  });
+
+  it('samples every request by default: the function gets TRACE_SAMPLE_RATIO=1', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', { Environment: { Variables: { VERSION: '1.2.3', TRACE_SAMPLE_RATIO: '1' } } });
+  });
+
+  it('gives the function the sampling ratio of the stage config', () => {
+    synth('1.2.3', { traceSampleRatio: 0.25 }).template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: { Variables: { VERSION: '1.2.3', TRACE_SAMPLE_RATIO: '0.25' } },
+    });
+  });
+
+  it('stops the synth when the sampling ratio of the stage is not from 0 to 1', () => {
+    expect(() => synth('1.2.3', { traceSampleRatio: 2 })).toThrow(/sampling ratio/);
   });
 
   it('keeps the logs for the number of days in the stage config', () => {

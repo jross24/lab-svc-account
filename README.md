@@ -97,9 +97,11 @@ Each stage holds one stack, `lab-svc-account`. The file `lib/stages.ts` holds th
 | `logRetentionDays` | 7 | 7 | 30 |
 | `release` | all at once | all at once | canary: 10 percent, then 100 percent after 5 minutes |
 | `injectFault` | false | false | false |
+| `traceSampleRatio` | 1 | 1 | 1 |
 
 Every stage has the same resources: the same alias, deployment group, alarms and dashboard. Only the values in the table differ.
 A unit test compares the three templates. `injectFault` is a device for the release drill. No stage sets it in `main`.
+`traceSampleRatio` is the share of new traces that are sampled. See "The export stays on the request path, and the sampling ratio" in the Tracing section.
 
 The code names no AWS account and no region. A stack goes to the account of the credentials that deploy it.
 All three stages use the same bundled Lambda code.
@@ -116,7 +118,7 @@ This service uses the pattern of [lab-svc-core](https://github.com/jross24/lab-s
 - One JSON log line and one embedded-metric line for each request, with the dimensions `service` and `version`.
 - OpenTelemetry tracing, with no Lambda active tracing, and the fault switch `injectFault`. See "Tracing".
 - Nine files in `lib/`. They are byte-identical copies of the files in core: `gradual-release.ts`, `service-dashboard.ts`, `instrument.ts`, `logger.ts`, `metrics.ts`, `tracing.ts`, `xray-exporter.ts`, `sigv4.ts` and `function-defaults.ts`.
-- The tests `test/tracing.test.ts`, `test/xray-exporter.test.ts` and `test/sigv4.test.ts`. They are byte-identical copies too.
+- The tests `test/tracing.test.ts`, `test/xray-exporter.test.ts`, `test/sigv4.test.ts` and `test/function-defaults.test.ts`. They are byte-identical copies too.
 - The first release that contains this change creates the alias and goes to each stage without a canary.
 
 ### What is different from core
@@ -220,6 +222,23 @@ Lambda active tracing is off. It would make a second trace for each call, and th
 
 The section [Tracing](https://github.com/jross24/lab-svc-core#tracing) of the lab-svc-core README explains the decision, the measurements and the trade-off. This README does not copy it.
 
+### The export stays on the request path, and the sampling ratio
+
+The owner decided that the export of the spans stays on the request path, with 512 MB of memory ([lab-platform#28](https://github.com/jross24/lab-platform/issues/28)).
+The answer of a request waits for one signed call to X-Ray. At 512 MB this costs about 35 ms for a warm request, and about 450 ms for the first request of a new environment.
+The lab accepts this cost, because the other ways cost more than they give here. The cost table for 128 to 1024 MB is in the [Tracing section of the lab-svc-core README](https://github.com/jross24/lab-svc-core#tracing).
+
+What changed is the sampling. A request that is not sampled makes no call to X-Ray, so it does not pay the cost.
+
+**How to set the ratio.** `traceSampleRatio` in `lib/stages.ts` is a number from 0 to 1 for each stage. The value 1 samples all requests, and every stage has it today.
+`lib/account-stack.ts` writes the number into the variable `TRACE_SAMPLE_RATIO` of the function (`tracingEnvironment` in `lib/function-defaults.ts`). `lib/tracing.ts` reads it.
+To change the ratio, edit the number and open a pull request. The pipeline deploys it like any other change. A number outside 0 to 1 stops `cdk synth`.
+
+The sampler is parent based. A request with a `traceparent` header follows its caller: a sampled parent is always followed, and a parent that is not sampled never is.
+A request with no parent is sampled by its trace ID, for the share that the ratio names. Web starts the trace of a page request and sends `traceparent`, so this service follows the decision of web. Its own ratio applies only to a request that comes with no `traceparent` header, for example a direct call.
+The log line keeps the trace ID of a request that is not sampled, but X-Ray then has no trace for this ID.
+The unit tests in `test/tracing.test.ts` prove the rules: ratio 0 gives no call to the exporter, and ratio 1 gives one.
+
 ### What the service records
 
 - **One server span for each request.** The wrapper `instrument` makes it and names it after the route, `GET /profile`. If the request has a `traceparent` header, the span continues the trace of the caller.
@@ -275,7 +294,7 @@ Outside Lambda the function has no name, so there is no tracing. The setting `TR
 ### What is the same as core
 
 These files are byte-identical copies of the files in core: `lib/tracing.ts`, `lib/xray-exporter.ts`, `lib/sigv4.ts`, `lib/function-defaults.ts` and `lib/instrument.ts`.
-The tests `test/tracing.test.ts`, `test/xray-exporter.test.ts` and `test/sigv4.test.ts` are copies too.
+The tests `test/tracing.test.ts`, `test/xray-exporter.test.ts`, `test/sigv4.test.ts` and `test/function-defaults.test.ts` are copies too.
 
 `test/instrument.test.ts` is the test of core with three changes: the service name, the route key and the path.
 The client span in `lib/core-client.ts` and the X-Ray statement in `lib/account-stack.ts` belong to this repository.

@@ -1,14 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SpanKind, SpanStatusCode } from '@opentelemetry/api';
 import { InMemorySpanExporter } from '@opentelemetry/sdk-trace';
 import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace';
 import { ExportResultCode } from '@opentelemetry/core';
 import type { ExportResult } from '@opentelemetry/core';
-import { Tracing, createDefaultTracing, xrayTraceId } from '../lib/tracing.ts';
+import { Tracing, createDefaultTracing, parseSampleRatio, xrayTraceId } from '../lib/tracing.ts';
 
 const TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
 const PARENT = '00f067aa0ba902b7';
 const TRACEPARENT = `00-${TRACE}-${PARENT}-01`;
+const UNSAMPLED_TRACEPARENT = `00-${TRACE}-${PARENT}-00`;
 
 function setup(exporter: SpanExporter = new InMemorySpanExporter()) {
   const tracing = Tracing.create({ service: 'catalogue', version: '1.2.3', exporter });
@@ -281,5 +282,181 @@ describe('createDefaultTracing', () => {
 
   it('is enabled in Lambda', () => {
     expect(createDefaultTracing('core', { AWS_LAMBDA_FUNCTION_NAME: 'f', AWS_REGION: 'eu-west-2', VERSION: '1.0.0' }).enabled).toBe(true);
+  });
+});
+
+describe('the sampling ratio', () => {
+  // An exporter that counts its calls and the spans in them.
+  function counting() {
+    const batches: number[] = [];
+    const exporter: SpanExporter = {
+      export: (spans, done) => {
+        batches.push(spans.length);
+        done({ code: ExportResultCode.SUCCESS });
+      },
+      shutdown: () => Promise.resolve(),
+    };
+    return { batches, exporter };
+  }
+
+  function withRatio(sampleRatio: number | undefined) {
+    const { batches, exporter } = counting();
+    const tracing = Tracing.create({ service: 'catalogue', version: '1.2.3', exporter, sampleRatio });
+    return { tracing, batches };
+  }
+
+  const request = (tracing: Tracing, headers?: Record<string, string>) =>
+    tracing.serve({ name: 'GET /products', headers }, () => Promise.resolve('answer'));
+
+  // A call to the next service. It returns the traceparent that the call carries.
+  async function callNext(tracing: Tracing): Promise<string | undefined> {
+    let sent: string | undefined;
+    await tracing.fetch(
+      (_url, init: { headers?: Record<string, string> }) => {
+        sent = init.headers?.traceparent;
+        return Promise.resolve(new Response());
+      },
+      'https://a.example.com/',
+      {},
+    );
+    return sent;
+  }
+
+  it('makes no export call for a request with ratio 0, and still answers', async () => {
+    const { tracing, batches } = withRatio(0);
+    await expect(request(tracing)).resolves.toBe('answer');
+    expect(batches).toEqual([]);
+  });
+
+  it('makes one export call for a request with ratio 1', async () => {
+    const { tracing, batches } = withRatio(1);
+    await request(tracing);
+    expect(batches).toEqual([1]);
+  });
+
+  it('samples every request when the ratio is not set', async () => {
+    const { tracing, batches } = withRatio(undefined);
+    await request(tracing);
+    await request(tracing);
+    expect(batches).toEqual([1, 1]);
+  });
+
+  it('follows a sampled parent in traceparent, also with ratio 0', async () => {
+    const { tracing, batches } = withRatio(0);
+    await request(tracing, { traceparent: TRACEPARENT });
+    expect(batches).toEqual([1]);
+  });
+
+  it('never samples a request whose parent is not sampled, also with ratio 1', async () => {
+    const { tracing, batches } = withRatio(1);
+    for (let i = 0; i < 20; i++) await request(tracing, { traceparent: UNSAMPLED_TRACEPARENT });
+    expect(batches).toEqual([]);
+  });
+
+  it('exports the spans of a failed request when it is sampled, and none when it is not', async () => {
+    const sampled = withRatio(1);
+    await expect(sampled.tracing.serve({ name: 'x' }, () => Promise.reject(new Error('boom')))).rejects.toThrow('boom');
+    expect(sampled.batches).toEqual([1]);
+    const dropped = withRatio(0);
+    await expect(dropped.tracing.serve({ name: 'x' }, () => Promise.reject(new Error('boom')))).rejects.toThrow('boom');
+    expect(dropped.batches).toEqual([]);
+  });
+
+  it('samples about the ratio of the requests that have no parent', async () => {
+    const { tracing, batches } = withRatio(0.5);
+    for (let i = 0; i < 400; i++) await request(tracing);
+    // The trace ID decides, and the IDs are random. 400 requests give 200 plus or minus 10 (one standard deviation).
+    // The limits are 6 standard deviations wide, so this test does not fail by chance.
+    expect(batches.length).toBeGreaterThan(140);
+    expect(batches.length).toBeLessThan(260);
+  });
+
+  it('keeps the trace ID of an unsampled request in the log field, and sends it on with the flag 00', async () => {
+    const { tracing, batches } = withRatio(1);
+    let id: string | undefined;
+    let sent: string | undefined;
+    await tracing.serve({ name: 'x', headers: { traceparent: UNSAMPLED_TRACEPARENT } }, async (span) => {
+      id = xrayTraceId(span);
+      sent = await callNext(tracing);
+    });
+    // The next service gets the flag 00 and does not sample either. The log lines of all services share the ID.
+    expect(sent).toMatch(new RegExp(`^00-${TRACE}-[0-9a-f]{16}-00$`));
+    expect(id).toBe('1-4bf92f35-77b34da6a3ce929d0e0e4736');
+    expect(batches).toEqual([]);
+  });
+
+  it('sends the decision of a new trace on to the next service: flag 01 when sampled, 00 when not', async () => {
+    const sampled = withRatio(1);
+    await sampled.tracing.serve({ name: 'x' }, async () => {
+      expect(await callNext(sampled.tracing)).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    });
+    const dropped = withRatio(0);
+    await dropped.tracing.serve({ name: 'x' }, async () => {
+      expect(await callNext(dropped.tracing)).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-00$/);
+    });
+  });
+
+  it.each([-0.1, 1.1, Number.NaN, Number.POSITIVE_INFINITY])('refuses the ratio %s, so a typo cannot switch tracing off', (ratio) => {
+    expect(() => Tracing.create({ service: 's', version: '1', exporter: counting().exporter, sampleRatio: ratio })).toThrow(RangeError);
+  });
+});
+
+describe('parseSampleRatio', () => {
+  it.each([
+    ['1', 1],
+    ['0', 0],
+    ['0.25', 0.25],
+    [' 0.5 ', 0.5],
+    ['1e-2', 0.01],
+  ])('reads %j as %d', (text, expected) => {
+    expect(parseSampleRatio(text)).toBe(expected);
+  });
+
+  it('passes a number in range on', () => {
+    expect(parseSampleRatio(0.1)).toBe(0.1);
+  });
+
+  it.each(['', '  ', 'half', '1.5', '-0.1', 'NaN', 'Infinity', '10%'])('refuses %j', (text) => {
+    expect(() => parseSampleRatio(text)).toThrow(/sampling ratio/);
+  });
+});
+
+describe('createDefaultTracing and the setting TRACE_SAMPLE_RATIO', () => {
+  const lambda = { AWS_LAMBDA_FUNCTION_NAME: 'f', AWS_REGION: 'eu-west-2', AWS_ACCESS_KEY_ID: 'AKID', AWS_SECRET_ACCESS_KEY: 'secret' };
+
+  // The exporter of the function reads process.env and sends with the global fetch. The test replaces both and
+  // counts the calls to X-Ray.
+  async function exportCalls(env: Record<string, string>): Promise<number> {
+    const calls = vi.fn(() => Promise.resolve(new Response('{}', { status: 200 })));
+    vi.stubGlobal('fetch', calls);
+    for (const [name, value] of Object.entries({ ...lambda, ...env })) vi.stubEnv(name, value);
+    try {
+      const tracing = createDefaultTracing('core');
+      await tracing.serve({ name: 'x' }, () => Promise.resolve());
+      return calls.mock.calls.length;
+    } finally {
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it('samples all requests when the setting is missing', async () => {
+    expect(await exportCalls({})).toBe(1);
+  });
+
+  it('samples all requests when the setting is empty', async () => {
+    expect(await exportCalls({ TRACE_SAMPLE_RATIO: '' })).toBe(1);
+  });
+
+  it('samples no request with TRACE_SAMPLE_RATIO=0: no call to X-Ray', async () => {
+    expect(await exportCalls({ TRACE_SAMPLE_RATIO: '0' })).toBe(0);
+  });
+
+  it('samples every request with TRACE_SAMPLE_RATIO=1', async () => {
+    expect(await exportCalls({ TRACE_SAMPLE_RATIO: '1' })).toBe(1);
+  });
+
+  it('falls back to all requests when the setting is not valid, because a lost trace costs more than a spare one', async () => {
+    expect(await exportCalls({ TRACE_SAMPLE_RATIO: 'half' })).toBe(1);
   });
 });
