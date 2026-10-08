@@ -361,7 +361,8 @@ The deployment-order rule applies here too. Deploy the `Dev` stage of lab-svc-co
 | `lib/core-client.ts` | Calls `GET /items` of core as a client span and checks the answer. |
 | `lib/sign.ts` | Signs the request to core with AWS Signature Version 4 for `execute-api`. It is not the same file as `lib/sigv4.ts`, which signs for `xray`. |
 | `test/` | The unit tests (vitest). |
-| `.github/workflows/` | Three small files that call the workflows in lab-workflows. |
+| `pipeline.json` | The name of the service and the services that it needs. The pipeline reads it. |
+| `.github/workflows/` | Four small files that call the workflows in lab-workflows: `pr`, `release`, `redeploy` and `check` (the dry run). |
 
 ## Release gate
 
