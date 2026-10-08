@@ -386,3 +386,5 @@ The reviewer approves it to go back, or cancels it if the smoke check was a fals
 
 If a release fails in the E2E suite or in the deployment to Test, a person can start "Re-run failed jobs". The lock of Test was released in the first attempt.
 The failed job takes the lock again if Test is free. If another run holds it, the job fails with a message. Wait until that run has ended, and re-run the failed jobs again.
+
+If a person starts "Re-run all jobs", the job `build` does not build again. The GitHub release of the version already holds the zip and its SHA-256 file. The job downloads them, checks the SHA-256 and passes the same zip on. So every environment and every attempt gets the same bytes.
