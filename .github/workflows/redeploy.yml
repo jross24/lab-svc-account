@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   redeploy:
-    uses: jross24/lab-workflows/.github/workflows/redeploy.yml@main
+    uses: jross24/lab-workflows/.github/workflows/redeploy.yml@preflight
     with:
       version: ${{ inputs.version }}
       environment: ${{ inputs.environment }}
