@@ -362,3 +362,5 @@ The suite runs while the release holds the lock of the Test environment. If the 
 After the deployment to Staging and to Production, the smoke subset of the same suite runs against that environment. It only reads.
 It checks that the page and the APIs answer, that the versions agree, and that this service reports the version of the release.
 A failed smoke check in Staging stops the release before Production.
+A failed smoke check in Production fails the job. The pipeline then starts a redeploy of the earlier version, and that run waits for the reviewer.
+The reviewer approves it to go back, or cancels it if the smoke check was a false alarm. The pipeline does not change Production by itself.
