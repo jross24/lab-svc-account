@@ -58,11 +58,12 @@ It signs with the temporary credentials of its own role. The Lambda runtime puts
 The file `lib/sign.ts` does the signing with `@smithy/signature-v4` and `@aws-crypto/sha256-js`. esbuild bundles both into the function.
 The call to core is also a client span of the trace. The section "Tracing" explains how the trace header and the signature work together.
 
-The stack also writes its own address for the web application of a later phase.
+The stack also writes its own address for the web application of a later phase. It writes its own version too.
 
 | Parameter | Value |
 | --- | --- |
 | `/lab/account/url` | The base URL of this API. Add `/profile` to call the route. |
+| `/lab/account/version` | The version of account that the stack runs. The release workflow of lab-workflows reads it, to check the deployment order and the set of tested versions. |
 
 ## Deployment order: core first
 
@@ -329,7 +330,7 @@ The deployment-order rule applies here too. Deploy the `Dev` stage of lab-svc-co
 | `lib/app.ts` | Reads the context values and makes the stages. |
 | `lib/stages.ts` | The typed settings of each stage: log retention, the release type and the fault switch. |
 | `lib/account-stage.ts` | The CDK stage. |
-| `lib/account-stack.ts` | The stack: SSM lookups, function (512 MB, ES module bundle), IAM policy for core and X-Ray, alias and release, API, dashboard, SSM parameter, outputs. |
+| `lib/account-stack.ts` | The stack: SSM lookups, function (512 MB, ES module bundle), IAM policy for core and X-Ray, alias and release, API, dashboard, SSM parameters, outputs. |
 | `lib/gradual-release.ts` | Copy from core. The alias, the deployment group, the three alarms and the `Release` type. |
 | `lib/service-dashboard.ts` | Copy from core. The dashboard of a stage. |
 | `lib/instrument.ts`, `lib/logger.ts`, `lib/metrics.ts` | Copy from core. The wrapper of the handler (it makes the server span), the log line and the metric line. |

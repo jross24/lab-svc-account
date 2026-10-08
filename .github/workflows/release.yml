@@ -12,6 +12,7 @@ concurrency:
 permissions:
   contents: write # the version tag and the GitHub release
   id-token: write # the OIDC login to AWS
+  actions: write # a newer release cancels an older release that waits for the production reviewer
 
 jobs:
   release:
