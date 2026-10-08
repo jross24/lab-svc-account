@@ -1,0 +1,2 @@
+# FAKE value for a scanner test. It is not a credential.
+token = "ghp_FakeScannerTestValueNotACredential00"
