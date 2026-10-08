@@ -1,7 +1,8 @@
 import { fileURLToPath } from 'node:url';
-import { CfnOutput, Duration, RemovalPolicy, Stack } from 'aws-cdk-lib';
+import { CfnOutput, Duration, RemovalPolicy, Stack, Tags } from 'aws-cdk-lib';
 import { CfnIntegration, HttpApi, HttpMethod } from 'aws-cdk-lib/aws-apigatewayv2';
 import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import type { CfnDashboard } from 'aws-cdk-lib/aws-cloudwatch';
 import { PolicyStatement } from 'aws-cdk-lib/aws-iam';
 import { CfnPermission, Runtime } from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
@@ -10,6 +11,7 @@ import { StringParameter } from 'aws-cdk-lib/aws-ssm';
 import type { Construct } from 'constructs';
 import { FUNCTION_BUNDLING, FUNCTION_MEMORY_MB, tracingEnvironment } from './function-defaults.ts';
 import { GradualRelease } from './gradual-release.ts';
+import { NAMESPACE_TAG, coreNamesFor, namesFor } from './namespace.ts';
 import { ServiceDashboard } from './service-dashboard.ts';
 import type { StageConfig } from './stages.ts';
 
@@ -31,18 +33,33 @@ export const LATENCY_P99_THRESHOLD_MS = 3000;
 export interface AccountStackProps {
   readonly version: string;
   readonly config: StageConfig;
+  // Only the Dev stage sets it (the context value `namespace`). It gives the stack, the URL parameter and the
+  // dashboard names of their own, so that several copies of the service can live in one account.
+  // With no namespace the stack has the names of the baseline copy. See "Namespaces" in the README.
+  readonly namespace?: string;
+  // Only the Dev stage sets it (the context value `coreNamespace`), and only together with a namespace. It points the
+  // stack at the parameters of a preview of core, `/lab/ns/<coreNamespace>/core/`. Without it the stack reads the
+  // baseline parameters of core, `/lab/core/`.
+  readonly coreNamespace?: string;
 }
 
 export class AccountStack extends Stack {
   constructor(scope: Construct, id: string, props: AccountStackProps) {
+    const names = namesFor(props.namespace);
+    const coreNames = coreNamesFor(props.coreNamespace);
     // No env here: the stack takes the account and the region of the credentials that deploy it.
-    super(scope, id, { stackName: 'lab-svc-account' });
+    super(scope, id, { stackName: names.stackName });
+
+    // The tag goes to the stack and to every resource that can have a tag. A copy with no namespace has no tag.
+    if (props.namespace !== undefined) Tags.of(this).add(NAMESPACE_TAG, props.namespace);
 
     // The core service writes these two parameters in each account.
     // CloudFormation reads them at deployment, so one synth serves each account.
     // So core must be in an account before this stack can go there.
-    const coreUrl = StringParameter.valueForStringParameter(this, '/lab/core/url');
-    const coreApiArn = StringParameter.valueForStringParameter(this, '/lab/core/api-arn');
+    // A copy reads the baseline parameters of core, `/lab/core/`, also when it has a namespace.
+    // Only the context value coreNamespace points it at a preview of core.
+    const coreUrl = StringParameter.valueForStringParameter(this, coreNames.urlParameterName);
+    const coreApiArn = StringParameter.valueForStringParameter(this, coreNames.apiArnParameterName);
 
     const profileFunction = new NodejsFunction(this, 'ProfileFunction', {
       entry: fileURLToPath(new URL('./profile-handler.ts', import.meta.url)),
@@ -117,18 +134,24 @@ export class AccountStack extends Stack {
       }
     }
 
-    new ServiceDashboard(this, 'Dashboard', { service: SERVICE, release, api });
+    const dashboard = new ServiceDashboard(this, 'Dashboard', { service: SERVICE, release, api });
+    if (props.namespace !== undefined) {
+      // The shared dashboard code (lib/service-dashboard.ts) always names the dashboard lab-svc-account.
+      // That file is a copy of the file in core, and it stays unchanged. So a copy with a namespace sets the name
+      // in the template. The property dashboardName of the construct keeps the old name, and nothing here reads it.
+      (dashboard.dashboard.node.defaultChild as CfnDashboard).addPropertyOverride('DashboardName', names.dashboardName);
+    }
 
     // The web application reads this parameter to find the API.
     new StringParameter(this, 'UrlParameter', {
-      parameterName: '/lab/account/url',
+      parameterName: names.urlParameterName,
       description: 'Base URL of the account API',
       stringValue: api.apiEndpoint,
     });
 
     // The pipeline of the other services reads this parameter. It checks the deployment order and the set of tested versions.
     const versionParameter = new StringParameter(this, 'VersionParameter', {
-      parameterName: '/lab/account/version',
+      parameterName: names.versionParameterName,
       description: 'Version of account that this stack runs',
       stringValue: props.version,
     });

@@ -1,5 +1,6 @@
 import { App } from 'aws-cdk-lib';
 import { AccountStage } from './account-stage.ts';
+import { parseNamespace } from './namespace.ts';
 import { DEV_STAGE, STAGES } from './stages.ts';
 
 const DEFAULT_VERSION = '0.0.0-dev';
@@ -23,14 +24,49 @@ function readDev(app: App): boolean {
   throw new Error(`Context value dev must be true or false. Got ${JSON.stringify(dev)}. Example: -c dev=true`);
 }
 
-// Context values: version (default 0.0.0-dev) and dev (default false).
+function readNamespace(app: App, dev: boolean): string | undefined {
+  const namespace: unknown = app.node.tryGetContext('namespace');
+  if (namespace === undefined) return undefined;
+  // A pipeline stage has fixed names. A namespace there would be an error that nobody sees, so refuse it.
+  if (!dev) {
+    throw new Error('Context value namespace works only with dev=true. Example: -c dev=true -c namespace=my-test');
+  }
+  return parseNamespace(namespace);
+}
+
+function readCoreNamespace(app: App, dev: boolean, namespace: string | undefined): string | undefined {
+  const coreNamespace: unknown = app.node.tryGetContext('coreNamespace');
+  if (coreNamespace === undefined) return undefined;
+  // A pipeline stage reads the baseline parameters of core, in its own account. A preview of core exists only in Dev.
+  if (!dev) {
+    throw new Error(
+      'Context value coreNamespace works only with dev=true. Example: -c dev=true -c namespace=my-test -c coreNamespace=pr-21',
+    );
+  }
+  const valid = parseNamespace(coreNamespace, 'coreNamespace');
+  // Without a namespace the copy is the baseline copy of the account. It must not point at a preview of core,
+  // because the preview goes away when its pull request closes.
+  if (namespace === undefined) {
+    throw new Error(
+      'Context value coreNamespace works only together with namespace. Example: -c dev=true -c namespace=my-test -c coreNamespace=pr-21',
+    );
+  }
+  return valid;
+}
+
+// Context values: version (default 0.0.0-dev), dev (default false), namespace (default none, only with dev=true)
+// and coreNamespace (default none, only with dev=true and a namespace). Without coreNamespace the service reads the
+// baseline parameters of core.
 export function createApp(context?: Record<string, unknown>): App {
   const app = new App({ context });
   const version = readVersion(app);
+  const dev = readDev(app);
+  const namespace = readNamespace(app, dev);
+  const coreNamespace = readCoreNamespace(app, dev, namespace);
 
-  if (readDev(app)) {
+  if (dev) {
     // Only the Dev stage, so a laptop cannot deploy a pipeline stage by accident.
-    new AccountStage(app, 'Dev', { version, config: DEV_STAGE });
+    new AccountStage(app, 'Dev', { version, config: DEV_STAGE, namespace, coreNamespace });
     return app;
   }
 

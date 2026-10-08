@@ -1,0 +1,28 @@
+name: preview
+
+# A temporary environment for this pull request. The label "preview" deploys the Dev stage of the service into the
+# developer account under the namespace pr-<number>. A push deploys the new commit.
+# A closed pull request, or a removed label, removes it. The README of lab-workflows explains the design.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled, closed]
+
+# Two events of one pull request must not deploy at the same time. A running deployment is never cancelled.
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # the OIDC login to the developer account
+  pull-requests: write # the comment with the URL
+
+jobs:
+  preview:
+    uses: jross24/lab-workflows/.github/workflows/preview.yml@main
+    # The jobs read the repository secret PR_ACCOUNT_ID_DEV.
+    secrets: inherit
+    with:
+      # The API of account is public. The route GET /profile answers HTTP 200 when the service can call core.
+      # The preview reads the baseline copy of core in the developer account, so this test also proves that call.
+      smoke-path: /profile
