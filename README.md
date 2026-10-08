@@ -310,7 +310,8 @@ To roll back while a release waits for the reviewer in Production, reject or can
 A redeploy to Production is also a canary. Do not redeploy a release from before the gradual release (`0.1.0` and `0.1.1`).
 Those releases have no alias. A redeploy of one removes the alias, the deployment group, the alarms and the dashboard.
 
-The three files in `.github/workflows/` are copies of the files in lab-svc-core. This repository has no other pipeline code.
+The four files in `.github/workflows/` call the workflows of lab-workflows. This repository has no other pipeline code. The files `pr`, `redeploy` and `check` are the same in all four services.
+The file `release` is the same too, except for the reference to the workflow of lab-workflows.
 
 ## Run the checks locally
 
