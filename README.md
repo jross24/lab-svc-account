@@ -303,6 +303,10 @@ To go back to an old version, run the `redeploy` workflow. It deploys the stored
 gh workflow run redeploy.yml -f version=<last-good-version> -f environment=test
 ```
 
+A redeploy to Test takes the lock of the Test environment, like a release. It waits for a release that uses Test, 20 minutes at most.
+A redeploy to Staging or Production runs the checks of the deployment order, then deploys, then runs the smoke subset. A redeploy may go back to an older version.
+To roll back while a release waits for the reviewer in Production, reject or cancel the waiting release first.
+
 A redeploy to Production is also a canary. Do not redeploy a release from before the gradual release (`0.1.0` and `0.1.1`).
 Those releases have no alias. A redeploy of one removes the alias, the deployment group, the alarms and the dashboard.
 
