@@ -358,3 +358,7 @@ The deployment-order rule applies here too. Deploy the `Dev` stage of lab-svc-co
 ## Release gate
 
 Each release runs the end-to-end suite of [lab-e2e](https://github.com/jross24/lab-e2e) in Test before it goes to Staging.
+The suite runs while the release holds the lock of the Test environment. If the suite fails, the release stops and the lock is released.
+After the deployment to Staging and to Production, the smoke subset of the same suite runs against that environment. It only reads.
+It checks that the page and the APIs answer, that the versions agree, and that this service reports the version of the release.
+A failed smoke check in Staging stops the release before Production.
