@@ -79,6 +79,10 @@ The README of [lab-workflows](https://github.com/jross24/lab-workflows) explains
 CloudFormation reads the parameters again at each deployment of this stack.
 If core gets a new URL, release or redeploy this service to pick it up.
 
+The pipeline also compares the set of versions that passed in Test with Staging and Production. This service has no range for web and catalogue in
+`pipeline.json`. So an environment must run at least the version of each that the E2E suite tested. If Production runs an older web, the job stops and names the
+release to deploy first. Core has a range (`>=0.5.0`), so an older core inside the range is accepted.
+
 To ask "could this service go to that environment now?" without a release, start the dry run:
 `gh workflow run check.yml --repo jross24/lab-svc-account -f environment=staging`. It reads SSM and deploys nothing.
 The input `requires` replaces the requirements of `pipeline.json` for that run only, so you can see the failure message of a check.
