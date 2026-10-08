@@ -71,7 +71,10 @@ Deploy core to an account before you deploy this service to that account.
 
 CloudFormation reads `/lab/core/url` and `/lab/core/api-arn` when it deploys this stack.
 If core is not in the account, the parameters do not exist, and the deployment fails before it creates a resource.
-The pipeline deploys each service on its own, so it does not enforce this order. You must keep it.
+The file `pipeline.json` names the services that this service needs: `"requires": { "core": ">=0.5.0" }`.
+Before each deploy job changes an environment, the pipeline reads `/lab/core/version` in that environment. It stops the job with a clear message
+if core is not there, or if its version is outside the range. The job fails before CloudFormation starts, so it changes nothing.
+The README of [lab-workflows](https://github.com/jross24/lab-workflows) explains the check.
 
 CloudFormation reads the parameters again at each deployment of this stack.
 If core gets a new URL, release or redeploy this service to pick it up.
