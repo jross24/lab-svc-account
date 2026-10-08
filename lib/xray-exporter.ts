@@ -24,7 +24,8 @@ function writeToStdout(line: string): void {
 // Sends spans to the OTLP endpoint of X-Ray: https://xray.<region>.amazonaws.com/v1/traces
 // The endpoint wants a request that is signed with AWS Signature Version 4 for the service "xray".
 // The OpenTelemetry exporter for JavaScript cannot sign a request, so this class does it.
-// The endpoint works only when CloudWatch Transaction Search is on in the account (see transaction-search.ts).
+// The endpoint works only when CloudWatch Transaction Search is on in the account.
+// The stack Platform of lab-platform owns that setting (see the README section "Why Transaction Search, and who owns it" of lab-svc-core).
 // A failed export never fails a request of the function: the class logs one line and reports the failure.
 export class XRayExporter implements SpanExporter {
   readonly #env: () => Env;
