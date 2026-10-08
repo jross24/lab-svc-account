@@ -282,9 +282,14 @@ The client span in `lib/core-client.ts` and the X-Ray statement in `lib/account-
 2. Merge the pull request with a squash. The `release` workflow starts.
 3. The workflow works out the next version from the commit title and creates the tag, for example `v0.2.0`.
 4. The workflow builds one time and stores the zipped `cdk.out` in a GitHub release.
-5. The workflow deploys that same zip to Test, then to Staging. In both, CodeDeploy moves the traffic at once.
-6. The workflow waits. A reviewer approves the `production` environment in GitHub. Then the workflow deploys the same zip to Production.
+5. The workflow takes the lock of Test. It checks the deployment order, deploys that same zip to Test, and runs the end-to-end suite. The suite also checks that Test reports the version of the release. The workflow records the four versions that passed as `tested-with.json` on the GitHub release.
+6. The workflow checks the order and the tested set again in Staging, deploys the zip there, and runs the smoke subset of the suite. CodeDeploy moves the traffic at once in Test and in Staging.
+7. The workflow waits. A reviewer approves the `production` environment in GitHub. A newer release that reaches this point cancels an older release that still waits. After the approval the workflow checks again, deploys the same zip to Production, and runs the smoke subset.
    CodeDeploy moves 10 percent of the traffic, waits 5 minutes, and moves the rest.
+   If the smoke subset fails, the job fails and a redeploy of the earlier version waits for the reviewer.
+
+The README of [lab-workflows](https://github.com/jross24/lab-workflows) explains each step.
+To prove that a failed suite stops the release, set the repository variable `E2E_FAULT_DRILL` to `full-test`, `smoke-staging` or `smoke-production`. Remove it after the drill.
 
 A title that starts with `feat:` gives a minor version. A title with `!` before the colon gives a major version. Any other title gives a patch version.
 
