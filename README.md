@@ -345,3 +345,5 @@ The deployment-order rule applies here too. Deploy the `Dev` stage of lab-svc-co
 ## Release gate
 
 Each release runs the end-to-end suite of [lab-e2e](https://github.com/jross24/lab-e2e) in Test before it goes to Staging.
+
+A scanner test line. It changes nothing.
