@@ -372,3 +372,6 @@ It checks that the page and the APIs answer, that the versions agree, and that t
 A failed smoke check in Staging stops the release before Production.
 A failed smoke check in Production fails the job. The pipeline then starts a redeploy of the earlier version, and that run waits for the reviewer.
 The reviewer approves it to go back, or cancels it if the smoke check was a false alarm. The pipeline does not change Production by itself.
+
+If a release fails in the E2E suite or in the deployment to Test, a person can start "Re-run failed jobs". The lock of Test was released in the first attempt.
+The failed job takes the lock again if Test is free. If another run holds it, the job fails with a message. Wait until that run has ended, and re-run the failed jobs again.
