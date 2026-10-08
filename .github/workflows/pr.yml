@@ -3,9 +3,15 @@ name: pr
 on:
   pull_request:
 
+# The shared workflow asks for these permissions. A called workflow cannot get more than the caller gives.
+# The diff job reads the deployed stack with an OIDC token (id-token) and writes one comment (pull-requests).
 permissions:
   contents: read
+  id-token: write
+  pull-requests: write
 
 jobs:
   pr:
     uses: jross24/lab-workflows/.github/workflows/pr.yml@main
+    # The diff job reads the repository secret PR_ACCOUNT_ID_PRODUCTION.
+    secrets: inherit
