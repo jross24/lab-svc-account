@@ -198,7 +198,7 @@ The full steps are in "The Production drill" of the [core README](https://github
 4. About one call in ten fails, because the canary gets 10 percent of the calls. The loop prints a 5xx status for them.
 5. Expect `ErrorsAlarm` and `ServiceErrorsAlarm` to fire, CodeDeploy to roll back, and the job to fail. Then revert with `fix: remove the drill fault`.
 
-The fault makes the function throw, so Lambda counts the error too. The 502 case, where the function does not throw, has a unit test and no drill.
+The fault makes the function throw, so Lambda counts the error too. The 502 case, where the function does not throw, has a unit test and no drill of its own. The lab ran the same case for catalogue in `lab-dev`, with the same shared alarm code: see "What an error means here" in the README of lab-svc-catalogue. It did not run the case for account.
 
 ## Tracing
 
