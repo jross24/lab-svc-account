@@ -250,7 +250,7 @@ describe('the metric that the third alarm watches', () => {
   const template = Template.fromStack(
     new AccountStack(new App(), 'Account', {
       version: '1.2.3',
-      config: { logRetentionDays: RetentionDays.ONE_WEEK, release: { kind: 'allAtOnce' }, injectFault: false },
+      config: { logRetentionDays: RetentionDays.ONE_WEEK, release: { kind: 'allAtOnce' }, injectFault: false, traceSampleRatio: 1 },
     }),
   );
 

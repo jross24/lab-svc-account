@@ -1,5 +1,6 @@
 import { OutputFormat } from 'aws-cdk-lib/aws-lambda-nodejs';
 import type { BundlingOptions } from 'aws-cdk-lib/aws-lambda-nodejs';
+import { SAMPLE_RATIO_ENV, parseSampleRatio } from './tracing.ts';
 
 // Settings that all four services give to their function. The README of lab-svc-core explains the numbers.
 
@@ -15,3 +16,9 @@ export const FUNCTION_BUNDLING: BundlingOptions = {
   mainFields: ['module', 'main'],
   banner: "import { createRequire } from 'module';const require = createRequire(import.meta.url);",
 };
+
+// The setting of a stage for the sampling ratio, as the environment of the function. The handler reads it in
+// tracing.ts. The check is here too, so a ratio outside 0 to 1 stops the synth and never reaches a function.
+export function tracingEnvironment(sampleRatio: number): Record<string, string> {
+  return { [SAMPLE_RATIO_ENV]: String(parseSampleRatio(sampleRatio)) };
+}

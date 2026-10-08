@@ -12,7 +12,7 @@ import type { Attributes, Context, Span, Tracer } from '@opentelemetry/api';
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
 import { AWSXRayIdGenerator } from '@opentelemetry/id-generator-aws-xray';
 import { resourceFromAttributes } from '@opentelemetry/resources';
-import { BatchSpanProcessor, TracerProvider } from '@opentelemetry/sdk-trace';
+import { BatchSpanProcessor, ParentBasedSampler, TraceIdRatioBasedSampler, TracerProvider } from '@opentelemetry/sdk-trace';
 import type { SpanExporter } from '@opentelemetry/sdk-trace';
 import { XRayExporter } from './xray-exporter.ts';
 
@@ -26,9 +26,25 @@ export interface TracingOptions {
   readonly resourceAttributes?: Attributes;
   // The longest time that the end of a request waits for the export of its spans.
   readonly flushTimeoutMs?: number;
+  // The share of the new traces that are sampled, from 0 (none) to 1 (all). The default is 1.
+  // It applies to a request that has no parent. A request with a traceparent header follows the flag of its parent.
+  readonly sampleRatio?: number;
 }
 
 const DEFAULT_FLUSH_TIMEOUT_MS = 2500;
+
+// The name of the setting that carries the sampling ratio to the function.
+export const SAMPLE_RATIO_ENV = 'TRACE_SAMPLE_RATIO';
+
+// Reads a sampling ratio: a number from 0 to 1. The OpenTelemetry sampler turns a bad number into 0 and says nothing,
+// and then a typo would switch the tracing off. So this function refuses anything else.
+export function parseSampleRatio(value: string | number): number {
+  const ratio = typeof value === 'number' ? value : value.trim() === '' ? Number.NaN : Number(value);
+  if (!Number.isFinite(ratio) || ratio < 0 || ratio > 1) {
+    throw new RangeError(`The sampling ratio must be a number from 0 to 1. Got ${JSON.stringify(value)}.`);
+  }
+  return ratio;
+}
 
 // Traces with OpenTelemetry, and no global state of OpenTelemetry. The class holds its own provider, its own
 // propagator and its own store for the active context, so a test can make as many instances as it wants.
@@ -40,6 +56,11 @@ const DEFAULT_FLUSH_TIMEOUT_MS = 2500;
 //
 // Each request ends with a flush, because Lambda freezes the function when the handler returns, and a frozen
 // function cannot send its spans.
+//
+// The sampler is "parent based". A request with a traceparent header follows the flag of the caller: a sampled
+// parent is always sampled, and a parent that is not sampled never is. A request with no parent is sampled by its
+// trace ID, for the share `sampleRatio`. A span that is not sampled is not recorded, and the flush has nothing to export.
+// The trace ID and the header traceparent exist in both cases, so the log lines of all services still share the ID.
 export class Tracing {
   readonly enabled: boolean;
   readonly #tracer: Tracer;
@@ -56,6 +77,7 @@ export class Tracing {
   }
 
   static create(options: TracingOptions): Tracing {
+    const sampleRatio = parseSampleRatio(options.sampleRatio ?? 1);
     const provider = new TracerProvider({
       resource: resourceFromAttributes({
         'service.name': options.service,
@@ -64,6 +86,7 @@ export class Tracing {
       }),
       // X-Ray wants a trace ID that starts with the time. The generator of X-Ray makes such an ID.
       idGenerator: new AWSXRayIdGenerator(),
+      sampler: new ParentBasedSampler({ root: new TraceIdRatioBasedSampler(sampleRatio) }),
       // The spans of one request leave in one batch, when the request ends. The long delay keeps the timer quiet.
       spanProcessors: [new BatchSpanProcessor({ exporter: options.exporter, scheduledDelayMillis: 60_000, maxExportBatchSize: 64 })],
     });
@@ -153,13 +176,26 @@ export function xrayTraceId(span: Span): string | undefined {
   return `1-${context.traceId.slice(0, 8)}-${context.traceId.slice(8)}`;
 }
 
+function sampleRatioOf(env: Env): number {
+  const text = env[SAMPLE_RATIO_ENV];
+  if (text === undefined || text === '') return 1;
+  try {
+    return parseSampleRatio(text);
+  } catch {
+    return 1;
+  }
+}
+
 // Tracing for a function in Lambda. Outside Lambda there is no function name, so the tracing is off.
-// The setting TRACING=off switches it off in Lambda too.
+// The setting TRACING=off switches it off in Lambda too. The setting TRACE_SAMPLE_RATIO (0 to 1) sets the share of
+// new traces that are sampled. When it is missing or not valid, the function samples all requests, because a trace
+// that is lost costs more than a trace that is not needed. The CDK app refuses a value that is not valid (function-defaults.ts).
 export function createDefaultTracing(service: string, env: Env = process.env): Tracing {
   if (!env.AWS_LAMBDA_FUNCTION_NAME || env.TRACING === 'off') return Tracing.disabled();
   const resourceAttributes: Attributes = { 'cloud.provider': 'aws', 'faas.name': env.AWS_LAMBDA_FUNCTION_NAME };
   if (env.AWS_REGION) resourceAttributes['cloud.region'] = env.AWS_REGION;
   return Tracing.create({
+    sampleRatio: sampleRatioOf(env),
     service,
     version: env.VERSION ?? 'unknown',
     exporter: new XRayExporter(),
