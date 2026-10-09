@@ -283,7 +283,7 @@ When web calls this service, the log lines of web, of this service and of core s
 
 - **One more IAM statement.** The function role gets `xray:PutTraceSegments` on the resource `*`. X-Ray actions do not support a resource. It is the only X-Ray action of the role.
 - **The OTLP endpoint of X-Ray.** The function sends its spans to `https://xray.<region>.amazonaws.com/v1/traces`. The request is signed with Signature Version 4 for the service `xray` (`lib/xray-exporter.ts`, `lib/sigv4.ts`).
-- **Transaction Search.** The endpoint works only when CloudWatch Transaction Search is on in the account. The stack of core turns it on. This stack does not touch it.
+- **Transaction Search.** The endpoint works only when CloudWatch Transaction Search is on in the account. The `Platform` stack of lab-platform owns it for the account. This stack does not touch it.
 - **512 MB of memory** (`FUNCTION_MEMORY_MB`). Lambda gives CPU in proportion to memory, and the export needs a TLS connection. The core README has the measurements.
 - **An ES module bundle** (`FUNCTION_BUNDLING`). The handler file is `index.mjs`. esbuild reads the `module` entry of each package and removes the code that no request uses.
   A test in `test/app.test.ts` checks that the bundle is `index.mjs`, that there is no `index.js`, and that `index.mjs` is smaller than 200 KB.
